@@ -52,7 +52,7 @@ class FoundationModel(nn.Module):
         # Load the ExPLoRA satellite weights from your downloaded file.
         # The paper provides "Encoder-only weights" where the LoRA adapters
         # are already merged, making them directly compatible with this backbone!
-        state_dict = torch.load(explora_checkpoint_path, map_location="cpu")
+        state_dict = torch.load(ckpt_path, map_location="cpu")
 
         # (Optional safety check: sometimes saved checkpoints wrap the weights in a 'model' key)
         if 'model' in state_dict:
