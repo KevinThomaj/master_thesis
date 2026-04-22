@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import math
 
 class ClusteringPipeline:
     def __init__(self, device=None):
@@ -46,8 +47,8 @@ class ClusteringPipeline:
         """Samples a balanced subset from the main dataframe."""
 
         #filtering based on year and state, just to simplify
-        filtered_df = df[(df['year_extracted'] == target_year) & (df['country_code'] == country_code)].copy()
-
+        #filtered_df = df[(df['year_extracted'] == target_year) & (df['country_code'] == country_code)].copy()
+        filtered_df = df.copy()
         print(f"--- Sampling {samples_per_class} images per class ---")
         sample_indices = []
 
@@ -220,3 +221,59 @@ class ClusteringPipeline:
                 correct += (predicted == batch_y).sum().item()
 
         return running_loss / len(loader), 100 * correct / total
+
+    import matplotlib.pyplot as plt
+    import math
+
+    def visualize_category_images(self,df, category_name, num_images=5, get_input_fn = None):
+        """
+        Visualizes a specified number of images from a chosen category.
+
+        Args:
+            df: The dataframe containing 'category' and 'index' columns.
+            category_name: The string name of the category to visualize.
+            num_images: The number of images to display.
+            get_input_fn: The function used to load the image based on its index.
+        """
+        # Filter dataframe for the requested category
+        subset = df[df['category'] == category_name]
+
+        if subset.empty:
+            print(f"Error: Category '{category_name}' not found in the dataframe.")
+            return
+
+        # Ensure we don't request more images than available
+        actual_num_images = min(len(subset), num_images)
+        if actual_num_images < num_images:
+            print(f"Note: Only {actual_num_images} images available for '{category_name}'.")
+
+        # Randomly sample the indices
+        sampled_indices = subset.sample(n=actual_num_images, random_state=42)['index'].tolist()
+
+        # Calculate grid dimensions (max 5 columns for readability)
+        cols = min(actual_num_images, 5)
+        rows = math.ceil(actual_num_images / cols)
+
+        fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
+        fig.suptitle(f"Category: {category_name} ({actual_num_images} images)", fontsize=16)
+
+        # Flatten axes array for easy iteration, handling 1D and 2D arrays
+        if actual_num_images == 1:
+            axes = [axes]
+        elif rows > 1 or cols > 1:
+            axes = axes.flatten()
+
+        for i, ax in enumerate(axes):
+            if i < actual_num_images:
+                idx = sampled_indices[i]
+                img = get_input_fn(idx)  # Uses your existing image loading logic
+                ax.imshow(img)
+                ax.set_title(f"Idx: {idx}")
+                ax.axis('off')
+            else:
+                # Hide empty subplots if the grid isn't perfectly filled
+                ax.axis('off')
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.90)  # Adjust title spacing
+        plt.show()
