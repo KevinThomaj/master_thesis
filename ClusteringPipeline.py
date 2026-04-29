@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import math
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 
 class ClusteringPipeline:
     def __init__(self, device=None):
@@ -47,8 +49,10 @@ class ClusteringPipeline:
         """Samples a balanced subset from the main dataframe."""
 
         #filtering based on year and state, just to simplify
-        #filtered_df = df[(df['year_extracted'] == target_year) & (df['country_code'] == country_code)].copy()
-        filtered_df = df.copy()
+        filtered_df = df[(df['year_extracted'] == target_year) & (df['country_code'] == country_code)
+            & df['category'].isin(["crop_field","airport_terminal","recreational_facility","place_of_worship","stadium"])].copy()
+        #filtered_df = df.copy()
+        #filtered_df = df[df['category'].isin(["crop_field","airport_terminal"])]
         print(f"--- Sampling {samples_per_class} images per class ---")
         sample_indices = []
 
@@ -144,6 +148,68 @@ class ClusteringPipeline:
 
         return df
 
+    def visualize_embedding_space(self, df, color_by='category', method='tsne', random_state=42):
+        """
+        Visualizes the high-dimensional embedding space by reducing it to 2D.
+
+        Args:
+            df (pd.DataFrame): The dataframe containing the 'embedding' column.
+            color_by (str): The column name used to color the points (e.g., 'category' or 'macro_class').
+            method (str): The dimensionality reduction technique ('tsne' or 'pca').
+            random_state (int): Random seed for reproducibility.
+        """
+
+        print(f"--- Reducing dimensionality using {method.upper()} ---")
+
+        # Unstack embeddings back into a 2D array
+        embeddings_matrix = np.stack(df['embedding'].values)
+
+        # Select and fit the dimensionality reduction model
+        if method.lower() == 'tsne':
+            # t-SNE is generally better for capturing non-linear local relationships in embeddings
+            reducer = TSNE(n_components=2, random_state=random_state, init='pca', learning_rate='auto')
+        elif method.lower() == 'pca':
+            # PCA is much faster, good for a quick global view
+            reducer = PCA(n_components=2, random_state=random_state)
+        else:
+            raise ValueError("Method must be 'tsne' or 'pca'.")
+
+        reduced_embeddings = reducer.fit_transform(embeddings_matrix)
+
+        # Create the plot
+        plt.figure(figsize=(14, 10))
+        unique_labels = df[color_by].unique()
+
+        # Use a colormap with enough distinct colors (tab20 supports up to 20 distinct colors)
+        cmap = plt.get_cmap('tab20')
+
+        # Scatter plot for each unique label to build the legend properly
+        for i, label in enumerate(unique_labels):
+            # Find the indices where the dataframe matches the current label
+            idx = df[color_by] == label
+
+            plt.scatter(
+                reduced_embeddings[idx, 0],
+                reduced_embeddings[idx, 1],
+                label=label,
+                alpha=0.7,
+                c=[cmap(i % 20)],  # Loop back through colors if more than 20 classes
+                edgecolors='w',
+                linewidth=0.5
+            )
+
+        plt.title(f"2D Embedding Space Visualization ({method.upper()})", fontsize=16)
+        plt.xlabel("Component 1", fontsize=12)
+        plt.ylabel("Component 2", fontsize=12)
+
+        # Place legend outside the plot so it doesn't overlap the data
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10, markerscale=1.5)
+
+        plt.grid(True, linestyle='--', alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+
+
     def train_offline(self, model, df, criterion, optimizer, target_col='category', epochs=100, batch_size=32,
                       log_interval=5):
         """Builds DataLoaders directly from the unified dataframe and trains the model."""
@@ -205,6 +271,238 @@ class ClusteringPipeline:
         print(f"Final Test Accuracy: {final_test_acc:.2f}%")
         return history
 
+    def train_online(self, model, df, criterion, optimizer, get_input_fn, transform_fn, class_to_idx=None,
+                     target_col='category', batch_size=32, num_epochs_per_batch=1, shuffle=True,order_by_concept = False,
+                     distillator=None, distill_weight=1.0):
+        """
+        Simulates an online datastream using Test-Then-Train (Prequential Evaluation).
+        Supports optional Feature-based Knowledge Distillation.
+        """
+        print("--- Avvio Streaming Pipeline (Prequential Evaluation) ---")
+        if shuffle:
+            print("Shuffling the dataset before streaming...")
+            # frac=1 returns all rows in random order.
+            # reset_index(drop=True) creates a clean, sequential index for the new order.
+            df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        if order_by_concept:
+            df = df.sort_values(by='macro_class').reset_index(drop=True)
+
+
+        # 1. Create a mapping from class names to integers if not provided
+        if class_to_idx is None:
+            unique_classes = df[target_col].unique()
+            class_to_idx = {name: idx for idx, name in enumerate(unique_classes)}
+
+        model = model.to(self.device)
+
+
+        # 2. Inizializzazione Buffer e Metriche
+        buffer_imgs = []
+        buffer_labels = []
+        buffer_teacher_features = []  # buffer for Feature Distillation
+
+        concept_corrette = 0
+        concept_viste = 0
+        concept_corrente = -1
+
+        # Iteriamo direttamente sul dataframe per simulare lo stream continuo
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Stream"):
+
+            if order_by_concept:
+                # Se il concept cambia, stampiamo un avviso (Simulazione Concept Drift!)
+                if row['macro_class'] != concept_corrente:
+                    if concept_corrente != -1 and concept_viste > 0:
+                        acc_finale = (concept_corrette / concept_viste) * 100
+                        print(f"\n---> [FINE CONCEPT {concept_corrente}] Accuratezza Chiusura: {acc_finale:.2f}% <---")
+                    # Rilevato nuovo Concept: Reset dei contatori!
+                    print(f"\n[!] CONCEPT DRIFT: Inizio Concept {row['macro_class']}")
+                    concept_corrente = row['macro_class']
+                    concept_corrette = 0
+                    concept_viste = 0
+
+
+            index = row['original_index']
+            category = row[target_col]
+
+            # --- 1. CARICAMENTO DATI REALI ---
+            img_pil = get_input_fn(index)
+            # Aggiungiamo dimensione batch e passiamo al device
+            img_tensor = transform_fn(img_pil).unsqueeze(0).to(self.device)
+
+            # Convertiamo l'etichetta stringa nel numero intero corrispondente
+            label_idx = class_to_idx[category]
+            label_tensor = torch.tensor([label_idx], dtype=torch.long).to(self.device)
+
+            # Se la distillazione è attiva, estraiamo l'embedding del teacher dal dataframe
+            if distillator is not None:
+                teacher_feat = torch.tensor(row['embedding'], dtype=torch.float32).unsqueeze(0).to(self.device)
+                buffer_teacher_features.append(teacher_feat)
+
+            # --- 2. PREQUENTIAL EVALUATION (TEST) ---
+            model.eval()
+            if distillator is not None:
+                distillator.eval()
+
+            with torch.no_grad():
+                # Il modello modificato restituisce un dict, estraiamo i 'logits'
+                prediction_output = model(img_tensor)
+                prediction_logits = prediction_output['logits']
+
+                predicted_class = torch.argmax(prediction_logits, dim=1)
+
+                # Aggiorniamo le metriche
+                if predicted_class.item() == label_idx:
+                    concept_corrette += 1
+                concept_viste += 1
+
+            # --- 3. AGGIUNTA AL BUFFER ---
+            buffer_imgs.append(img_tensor)
+            buffer_labels.append(label_tensor)
+
+            # --- 4. ONLINE LEARNING (TRAIN SUL BATCH) ---
+            if len(buffer_imgs) == batch_size:
+                model.train()  # Modalità allenamento
+                if distillator is not None:
+                    distillator.train()
+
+                batch_imgs = torch.cat(buffer_imgs, dim=0)
+                batch_labels = torch.cat(buffer_labels, dim=0)
+
+                if distillator is not None:
+                    batch_teacher = torch.cat(buffer_teacher_features, dim=0)
+
+                loss_ce_history = []
+                loss_distill_history = []
+                for epoch in range(num_epochs_per_batch):
+                    optimizer.zero_grad()
+
+                    # Forward pass sull'intero batch
+                    student_output = model(batch_imgs)
+                    logits = student_output['logits']
+
+                    # Calcolo Loss per il Task di Classificazione (CrossEntropy)
+                    loss_ce = criterion(logits, batch_labels)
+                    total_loss = loss_ce
+                    loss_ce_history.append(loss_ce.item())
+                    # Calcolo Loss per il Task di Distillazione
+                    if distillator is not None:
+                        student_features = student_output['features']
+                        loss_distill = distillator(student_features, batch_teacher)
+
+                        # Combiniamo le loss
+                        total_loss = loss_ce + (distill_weight * loss_distill)
+
+                        loss_distill_history.append(loss_distill.item())
+
+                    # Backward pass basato sulla loss totale
+                    total_loss.backward()
+                    optimizer.step()
+                print(f"Loss output student: {np.mean(loss_ce_history):.4f}")
+                if distillator is not None:
+                    print(f"Loss distillation: {np.mean(loss_distill_history):.4f}")
+
+                # Stampa dell'accuratezza cumulata
+                acc_corrente = (concept_corrette / concept_viste) * 100
+                print(
+                    f"Sample visti: {concept_viste} | Classi corrette: {concept_corrette} | Accuratezza Cumulata: {acc_corrente:.2f}%")
+
+                # Svuotiamo i buffer per il prossimo ciclo
+                buffer_imgs.clear()
+                buffer_labels.clear()
+                if distillator is not None:
+                    buffer_teacher_features.clear()
+
+        # Optional: Print final accuracy at the very end of the stream
+        final_acc = (concept_corrette / concept_viste) * 100 if concept_viste > 0 else 0
+        print(f"\n--- Fine Stream | Accuratezza Finale: {final_acc:.2f}% ---")
+
+    def linear_probing_online(self, classifier, df, criterion, optimizer, class_to_idx=None,
+                              target_col='category', batch_size=32, num_epochs_per_batch=1, shuffle=True):
+        """
+        Simulates an online datastream using Test-Then-Train for Linear Probing.
+        Uses pre-computed embeddings directly from the dataframe.
+        """
+        print("--- Avvio Streaming Pipeline (Linear Probing Online su Embeddings Pre-calcolati) ---")
+
+        if shuffle:
+            print("Shuffling the dataset before streaming...")
+            df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        # 1. Mappatura classi
+        if class_to_idx is None:
+            unique_classes = df[target_col].unique()
+            class_to_idx = {name: idx for idx, name in enumerate(unique_classes)}
+
+        # 2. Configurazione Modello
+        classifier = classifier.to(self.device)
+
+        # 3. Inizializzazione Buffer
+        buffer_features = []
+        buffer_labels = []
+
+        concept_corrette = 0
+        concept_viste = 0
+
+        # Iteriamo sul dataframe per simulare lo stream
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Stream"):
+            category = row[target_col]
+
+            # --- 1. CARICAMENTO FEATURES PRE-CALCOLATE ---
+            # L'embedding è già un numpy array nel dataframe. Lo convertiamo in tensor.
+            # Usiamo unsqueeze(0) per aggiungere la dimensione del batch (1, embedding_dim)
+            features = torch.tensor(row['embedding'], dtype=torch.float32).unsqueeze(0).to(self.device)
+
+            label_idx = class_to_idx[category]
+            label_tensor = torch.tensor([label_idx], dtype=torch.long).to(self.device)
+
+            # --- 2. PREQUENTIAL EVALUATION (TEST SUL CLASSIFICATORE) ---
+            classifier.eval()
+            with torch.no_grad():
+                prediction_logits = classifier(features)
+                predicted_class = torch.argmax(prediction_logits, dim=1)
+
+                # Aggiorniamo le metriche
+                if predicted_class.item() == label_idx:
+                    concept_corrette += 1
+                concept_viste += 1
+
+            # --- 3. AGGIUNTA AL BUFFER ---
+            buffer_features.append(features)
+            buffer_labels.append(label_tensor)
+
+            # --- 4. ONLINE LEARNING (TRAIN DEL SOLO CLASSIFICATORE SUL BATCH) ---
+            if len(buffer_features) == batch_size:
+                classifier.train()
+
+                batch_features = torch.cat(buffer_features, dim=0)
+                batch_labels = torch.cat(buffer_labels, dim=0)
+
+                for epoch in range(num_epochs_per_batch):
+                    optimizer.zero_grad()
+
+                    # Forward pass solo del classificatore (istantaneo)
+                    logits = classifier(batch_features)
+
+                    # Calcolo Loss e Backward
+                    loss_ce = criterion(logits, batch_labels)
+                    loss_ce.backward()
+                    optimizer.step()
+
+                # Stampa dell'accuratezza cumulata
+                acc_corrente = (concept_corrette / concept_viste) * 100
+                print(
+                    f"Sample visti: {concept_viste} | Classi corrette: {concept_corrette} | Accuratezza Cumulata: {acc_corrente:.2f}%")
+
+                # Svuotiamo i buffer per il prossimo ciclo
+                buffer_features.clear()
+                buffer_labels.clear()
+
+        # Print finale
+        final_acc = (concept_corrette / concept_viste) * 100 if concept_viste > 0 else 0
+        print(f"\n--- Fine Stream | Accuratezza Finale Linear Probing: {final_acc:.2f}% ---")
+
+
+
     def _evaluate(self, model, loader, criterion):
         """Internal helper for evaluation."""
         model.eval()
@@ -222,8 +520,7 @@ class ClusteringPipeline:
 
         return running_loss / len(loader), 100 * correct / total
 
-    import matplotlib.pyplot as plt
-    import math
+
 
     def visualize_category_images(self,df, category_name, num_images=5, get_input_fn = None):
         """

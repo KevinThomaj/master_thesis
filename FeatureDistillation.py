@@ -33,7 +33,7 @@ class LinearBNLogSumDistiller(Projector):
             nn.Linear(dimFeatureStudent,dimFeatureTeacher),
             nn.BatchNorm1d(dimFeatureTeacher)
         )
-        self.model2 = nn.BatchNorm1d(dimFeatureStudent)
+        self.model2 = nn.BatchNorm1d(dimFeatureTeacher)
     def forward(self,student_features,teacher_features):
         projected_student_features = self.model1(student_features)
         projected_teacher_features = self.model2(teacher_features)
@@ -53,7 +53,7 @@ class LinearReluDistiller(Projector):
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(dimFeatureStudent,dimFeatureTeacher),
-            nn.ReLU()
+            #nn.ReLU()
         )
     def forward(self,student_features,teacher_features):
         projected_student_features = self.model(student_features)
@@ -67,8 +67,7 @@ class MLPDistiller(Projector):
         self.model = nn.Sequential(
             nn.Linear(dimFeatureStudent,hiddenLayerSize),
             nn.ReLU(),
-            nn.Linear(hiddenLayerSize,dimFeatureTeacher),
-            nn.ReLU() #forse va messo, forse no
+            nn.Linear(hiddenLayerSize,dimFeatureTeacher)
         )
     def forward(self,student_features,teacher_features):
         projected_student_features = self.model(student_features)
