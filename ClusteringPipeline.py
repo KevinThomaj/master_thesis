@@ -3,6 +3,7 @@ import gc
 import os
 
 import torch
+import torchvision
 
 from tqdm import tqdm
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
@@ -18,6 +19,7 @@ import matplotlib.pyplot as plt
 import math
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
+import torchvision.transforms as T
 
 class ClusteringPipeline:
     def __init__(self, device=None):
@@ -49,10 +51,13 @@ class ClusteringPipeline:
         """Samples a balanced subset from the main dataframe."""
 
         #filtering based on year and state, just to simplify
-        filtered_df = df[(df['year_extracted'] == target_year) & (df['country_code'] == country_code)
-            & df['category'].isin(["crop_field","airport_terminal","recreational_facility","place_of_worship","stadium"])].copy()
-        #filtered_df = df.copy()
+        filtered_df = df[df['category'].isin(
+            ["stadium","swimming_pool", "multi-unit_residential", "recreational_facility","park",
+             "airport_hangar", "airport_terminal", "crop_field", "amusement_park", "military_facility",
+             "nuclear_powerplant","airport", "runway","aquaculture", "wind_farm"])].copy()
+
         #filtered_df = df[df['category'].isin(["crop_field","airport_terminal"])]
+        #filtered_df = df.copy()
         print(f"--- Sampling {samples_per_class} images per class ---")
         sample_indices = []
 
@@ -66,7 +71,7 @@ class ClusteringPipeline:
         return df_sample
 
     def get_embeddings(self, df_sample, model, get_input_fn, transform_fn, batch_size=128,
-                       save_path=None):
+                       save_path=None,compute_stats = True):
         """
         Extracts embeddings and creates a BRAND NEW, lean DataFrame
         that acts as your standalone dataset for clustering and training.
@@ -82,10 +87,31 @@ class ClusteringPipeline:
         all_embeddings = []
         indices = df_sample['index'].tolist()
 
+
+        #for mean and std
+        channels_sum = torch.zeros(3).to(self.device)
+        channels_squared_sum = torch.zeros(3).to(self.device)
+        total_pixels = 0
+
         with torch.no_grad():
             for i in tqdm(range(0, len(indices), batch_size), desc="Extracting"):
                 batch_idx = indices[i:i + batch_size]
-                batch_imgs = [transform_fn(get_input_fn(idx)) for idx in batch_idx]
+                # 1. Load raw PIL images
+                raw_imgs = [get_input_fn(idx) for idx in batch_idx]
+                
+                # 2. Compute Statistics on raw tensors (0-1 scaled, NO ImageNet normalization)
+                if compute_stats:
+                    raw_tensors = torch.stack([T.ToTensor()(img) for img in raw_imgs], dim=0).to(self.device)
+                    B, C, H, W = raw_tensors.shape
+                    channels_sum += torch.sum(raw_tensors, dim=[0, 2, 3])
+                    channels_squared_sum += torch.sum(raw_tensors ** 2, dim=[0, 2, 3])
+                    total_pixels += B * H * W
+                    del raw_tensors # Free memory immediately
+
+                # 3. Apply your full transform_fn (WITH ImageNet normalization) for the FM
+                batch_imgs = [transform_fn(img) for img in raw_imgs]
+
+
                 input_tensor = torch.stack(batch_imgs, dim=0).to(self.device)
 
                 features = model(input_tensor)
@@ -112,7 +138,24 @@ class ClusteringPipeline:
             print("Saving new embeddings dataset to disk...")
             df_dataset.to_parquet(save_path, engine='pyarrow')
 
+        # 4. Finalize Statistics
+        if compute_stats:
+            mean = channels_sum / total_pixels
+            std = (channels_squared_sum / total_pixels - mean ** 2) ** 0.5
+            
+            mean_list = mean.cpu().tolist()
+            std_list = std.cpu().tolist()
+            
+            print(f"\nCalculated Dataset Mean: {mean_list}")
+            print(f"Calculated Dataset Std:  {std_list}")
         return df_dataset
+
+    def create_concepts(self, df,class_to_concept_mapping):
+        # Modify the dataset dataframe to include the new labels
+        df['concept'] = df['category'].map(class_to_concept_mapping)
+        print("Distribution of images across the new macro-classes:")
+        print(df['concept'].value_counts())
+        return df
 
     def cluster_by_class(self, df, num_clusters=6, method='ward', metric='euclidean'):
         """Takes the unified dataframe, extracts embeddings natively, and performs clustering."""
@@ -133,10 +176,10 @@ class ClusteringPipeline:
         class_to_macro_mapping = dict(zip(name_classes, cluster_labels))
 
         # Modify the dataset dataframe to include the new labels
-        df['macro_class'] = df['category'].map(class_to_macro_mapping)
+        df['concept'] = df['category'].map(class_to_macro_mapping)
 
         print("Distribution of images across the new macro-classes:")
-        print(df['macro_class'].value_counts())
+        print(df['concept'].value_counts())
 
         plt.figure(figsize=(20, 10))
         dendrogram(linkage_data, labels=name_classes, leaf_rotation=90, leaf_font_size=10)
@@ -154,7 +197,7 @@ class ClusteringPipeline:
 
         Args:
             df (pd.DataFrame): The dataframe containing the 'embedding' column.
-            color_by (str): The column name used to color the points (e.g., 'category' or 'macro_class').
+            color_by (str): The column name used to color the points (e.g., 'concept').
             method (str): The dimensionality reduction technique ('tsne' or 'pca').
             random_state (int): Random seed for reproducibility.
         """
@@ -272,21 +315,12 @@ class ClusteringPipeline:
         return history
 
     def train_online(self, model, df, criterion, optimizer, get_input_fn, transform_fn, class_to_idx=None,
-                     target_col='category', batch_size=32, num_epochs_per_batch=1, shuffle=True,order_by_concept = False,
-                     distillator=None, distill_weight=1.0):
+                     target_col='category', batch_size=32, num_epochs_per_batch=1,
+                     distillator=None, distill_weight=1.0,ema = None):
         """
         Simulates an online datastream using Test-Then-Train (Prequential Evaluation).
         Supports optional Feature-based Knowledge Distillation.
         """
-        print("--- Avvio Streaming Pipeline (Prequential Evaluation) ---")
-        if shuffle:
-            print("Shuffling the dataset before streaming...")
-            # frac=1 returns all rows in random order.
-            # reset_index(drop=True) creates a clean, sequential index for the new order.
-            df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-        if order_by_concept:
-            df = df.sort_values(by='macro_class').reset_index(drop=True)
-
 
         # 1. Create a mapping from class names to integers if not provided
         if class_to_idx is None:
@@ -295,30 +329,34 @@ class ClusteringPipeline:
 
         model = model.to(self.device)
 
+        history = {
+            'total_samples_seen': [],
+            'cumulative_accuracy': [],
+            'drift_points': []
+        }
 
         # 2. Inizializzazione Buffer e Metriche
         buffer_imgs = []
         buffer_labels = []
         buffer_teacher_features = []  # buffer for Feature Distillation
 
-        concept_corrette = 0
-        concept_viste = 0
-        concept_corrente = -1
+        concept_correct = 0
+        concept_number_images = 0
+        current_concept = 0
+        total_samples_seen = 0
 
         # Iteriamo direttamente sul dataframe per simulare lo stream continuo
         for _, row in tqdm(df.iterrows(), total=len(df), desc="Stream"):
-
-            if order_by_concept:
-                # Se il concept cambia, stampiamo un avviso (Simulazione Concept Drift!)
-                if row['macro_class'] != concept_corrente:
-                    if concept_corrente != -1 and concept_viste > 0:
-                        acc_finale = (concept_corrette / concept_viste) * 100
-                        print(f"\n---> [FINE CONCEPT {concept_corrente}] Accuratezza Chiusura: {acc_finale:.2f}% <---")
-                    # Rilevato nuovo Concept: Reset dei contatori!
-                    print(f"\n[!] CONCEPT DRIFT: Inizio Concept {row['macro_class']}")
-                    concept_corrente = row['macro_class']
-                    concept_corrette = 0
-                    concept_viste = 0
+            total_samples_seen += 1
+            row_concept = row['concept']
+            if row_concept != current_concept:
+                print(
+                    f"\n--- DRIFT DETECTED: Transitioning from Concept {current_concept} to Concept {row_concept} ---")
+                print("Resetting accuracy metrics...")
+                history['drift_points'].append(total_samples_seen)
+                concept_correct = 0
+                concept_number_images = 0
+                current_concept = row_concept
 
 
             index = row['original_index']
@@ -339,21 +377,31 @@ class ClusteringPipeline:
                 buffer_teacher_features.append(teacher_feat)
 
             # --- 2. PREQUENTIAL EVALUATION (TEST) ---
-            model.eval()
             if distillator is not None:
                 distillator.eval()
-
-            with torch.no_grad():
-                # Il modello modificato restituisce un dict, estraiamo i 'logits'
-                prediction_output = model(img_tensor)
-                prediction_logits = prediction_output['logits']
-
+            if ema is not None:
+                prediction_logits = ema.predict(img_tensor)
                 predicted_class = torch.argmax(prediction_logits, dim=1)
 
                 # Aggiorniamo le metriche
                 if predicted_class.item() == label_idx:
-                    concept_corrette += 1
-                concept_viste += 1
+                    concept_correct += 1
+                concept_number_images += 1
+
+            else:
+                model.eval()
+                with torch.no_grad():
+                    # Il modello modificato restituisce un dict, estraiamo i 'logits'
+                    prediction_output = model(img_tensor)
+                    prediction_logits = prediction_output['logits']
+
+                    predicted_class = torch.argmax(prediction_logits, dim=1)
+
+                    # Aggiorniamo le metriche
+                    if predicted_class.item() == label_idx:
+                        concept_correct += 1
+                    concept_number_images += 1
+
 
             # --- 3. AGGIUNTA AL BUFFER ---
             buffer_imgs.append(img_tensor)
@@ -397,15 +445,20 @@ class ClusteringPipeline:
                     # Backward pass basato sulla loss totale
                     total_loss.backward()
                     optimizer.step()
+
+                #Update EMA if needed
+                if ema is not None:
+                    ema.update(model)
+                # --- 5. POPULATE HISTORY ---
+                acc_corrente = (concept_correct / concept_number_images) * 100 if concept_number_images > 0 else 0
+                history['total_samples_seen'].append(total_samples_seen)
+                history['cumulative_accuracy'].append(acc_corrente)
+
                 print(f"Loss output student: {np.mean(loss_ce_history):.4f}")
                 if distillator is not None:
                     print(f"Loss distillation: {np.mean(loss_distill_history):.4f}")
-
-                # Stampa dell'accuratezza cumulata
-                acc_corrente = (concept_corrette / concept_viste) * 100
                 print(
-                    f"Sample visti: {concept_viste} | Classi corrette: {concept_corrette} | Accuratezza Cumulata: {acc_corrente:.2f}%")
-
+                    f"Sample visti: {concept_number_images} | Classi corrette: {concept_correct} | Accuratezza Cumulata: {acc_corrente:.2f}%")
                 # Svuotiamo i buffer per il prossimo ciclo
                 buffer_imgs.clear()
                 buffer_labels.clear()
@@ -413,20 +466,18 @@ class ClusteringPipeline:
                     buffer_teacher_features.clear()
 
         # Optional: Print final accuracy at the very end of the stream
-        final_acc = (concept_corrette / concept_viste) * 100 if concept_viste > 0 else 0
+        final_acc = (concept_correct / concept_number_images) * 100 if concept_number_images > 0 else 0
         print(f"\n--- Fine Stream | Accuratezza Finale: {final_acc:.2f}% ---")
 
+        return final_acc,history
+
     def linear_probing_online(self, classifier, df, criterion, optimizer, class_to_idx=None,
-                              target_col='category', batch_size=32, num_epochs_per_batch=1, shuffle=True):
+                              target_col='category', batch_size=32, num_epochs_per_batch=1):
         """
         Simulates an online datastream using Test-Then-Train for Linear Probing.
         Uses pre-computed embeddings directly from the dataframe.
         """
         print("--- Avvio Streaming Pipeline (Linear Probing Online su Embeddings Pre-calcolati) ---")
-
-        if shuffle:
-            print("Shuffling the dataset before streaming...")
-            df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
         # 1. Mappatura classi
         if class_to_idx is None:
@@ -440,11 +491,29 @@ class ClusteringPipeline:
         buffer_features = []
         buffer_labels = []
 
-        concept_corrette = 0
-        concept_viste = 0
+        # 1. Initialize History Tracking
+        history = {
+            'total_samples_seen': [],
+            'cumulative_accuracy': [],
+        }
+
+        concept_correct = 0
+        concept_number_images = 0
+        current_concept = 0
+        total_samples_seen = 0
 
         # Iteriamo sul dataframe per simulare lo stream
         for _, row in tqdm(df.iterrows(), total=len(df), desc="Stream"):
+            total_samples_seen += 1
+
+            row_concept = row['concept']
+            if row_concept != current_concept:
+                print(
+                    f"\n--- DRIFT DETECTED: Transitioning from Concept {current_concept} to Concept {row_concept} ---")
+                print("Resetting accuracy metrics...")
+                concept_correct = 0
+                concept_number_images = 0
+                current_concept = row_concept
             category = row[target_col]
 
             # --- 1. CARICAMENTO FEATURES PRE-CALCOLATE ---
@@ -463,8 +532,8 @@ class ClusteringPipeline:
 
                 # Aggiorniamo le metriche
                 if predicted_class.item() == label_idx:
-                    concept_corrette += 1
-                concept_viste += 1
+                    concept_correct += 1
+                concept_number_images += 1
 
             # --- 3. AGGIUNTA AL BUFFER ---
             buffer_features.append(features)
@@ -476,7 +545,7 @@ class ClusteringPipeline:
 
                 batch_features = torch.cat(buffer_features, dim=0)
                 batch_labels = torch.cat(buffer_labels, dim=0)
-
+                loss_ce_history = []
                 for epoch in range(num_epochs_per_batch):
                     optimizer.zero_grad()
 
@@ -487,19 +556,23 @@ class ClusteringPipeline:
                     loss_ce = criterion(logits, batch_labels)
                     loss_ce.backward()
                     optimizer.step()
+                    loss_ce_history.append(loss_ce.item())
 
-                # Stampa dell'accuratezza cumulata
-                acc_corrente = (concept_corrette / concept_viste) * 100
+                # --- 2. POPULATE HISTORY ---
+                acc_corrente = (concept_correct / concept_number_images) * 100
+                history['total_samples_seen'].append(total_samples_seen)
+                history['cumulative_accuracy'].append(acc_corrente)
+
                 print(
-                    f"Sample visti: {concept_viste} | Classi corrette: {concept_corrette} | Accuratezza Cumulata: {acc_corrente:.2f}%")
-
+                    f"Sample visti: {concept_number_images} | Classi corrette: {concept_correct} | Accuratezza Cumulata: {acc_corrente:.2f}%")
                 # Svuotiamo i buffer per il prossimo ciclo
                 buffer_features.clear()
                 buffer_labels.clear()
 
         # Print finale
-        final_acc = (concept_corrette / concept_viste) * 100 if concept_viste > 0 else 0
+        final_acc = (concept_correct / concept_number_images) * 100 if concept_number_images > 0 else 0
         print(f"\n--- Fine Stream | Accuratezza Finale Linear Probing: {final_acc:.2f}% ---")
+        return final_acc,history
 
 
 
@@ -573,4 +646,53 @@ class ClusteringPipeline:
 
         plt.tight_layout()
         plt.subplots_adjust(top=0.90)  # Adjust title spacing
+        plt.show()
+
+    def plot_performance_over_time(self, all_results):
+        """
+        Plots strictly the cumulative accuracy over time, grouped by experiment.
+        """
+        if not all_results:
+            print("No results to plot.")
+            return
+
+        # Extract unique experiment groups
+        experiment_groups = list(set(r['experiment_group'] for r in all_results))
+        experiment_groups.sort()
+
+        # Calculate grid dimensions for subplots
+        cols = min(2, len(experiment_groups))
+        rows = math.ceil(len(experiment_groups) / cols)
+
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 6 * rows), squeeze=False)
+        fig.suptitle("Cumulative Accuracy Over Time", fontsize=20, y=1.02)
+        axes = axes.flatten()
+
+        for i, group_name in enumerate(experiment_groups):
+            ax = axes[i]
+            group_results = [r for r in all_results if r['experiment_group'] == group_name]
+
+            for res in group_results:
+                # Extract ONLY the global timeline and cumulative accuracy
+                total_samples = res['history']['total_samples_seen']
+                accuracy = res['history']['cumulative_accuracy']
+
+                # Create a label showing the hyperparameters used
+                label = " | ".join([f"{k}:{v}" for k, v in res['params'].items()])
+
+                # Plot strictly the accuracy curve
+                ax.plot(total_samples, accuracy, label=label, alpha=0.8, linewidth=2)
+
+            # Format the subplot
+            ax.set_title(group_name.replace("_", " "), fontsize=14, fontweight='bold')
+            ax.set_xlabel("Total Samples Seen", fontsize=12)
+            ax.set_ylabel("Cumulative Accuracy (%)", fontsize=12)
+            ax.grid(True, linestyle='--', alpha=0.5)
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
+
+        # Hide unused subplots if the grid isn't perfectly filled
+        for j in range(len(experiment_groups), len(axes)):
+            axes[j].axis('off')
+
+        plt.tight_layout()
         plt.show()

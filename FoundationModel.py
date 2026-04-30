@@ -18,7 +18,6 @@ class FoundationModel(nn.Module):
 
 
     def forward(self,inputTensor):
-
         with torch.no_grad():
             features = self.FM(inputTensor)[-1]
             # Ensure features are flattened to (Batch, Embedding dim)
