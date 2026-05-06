@@ -14,7 +14,7 @@
 #by the projector.(paper Improved Feature Distillation via Projector Ensemble)
 import torch
 from torch import nn
-
+import torch.nn.functional as F
 
 class Projector(nn.Module):
     def __init__(self):
@@ -29,18 +29,21 @@ class Projector(nn.Module):
 class LinearBNLogSumDistiller(Projector):
     def __init__(self,dimFeatureStudent,dimFeatureTeacher):
         super().__init__()
+        self.alpha = 4
         self.model1 = nn.Sequential(
             nn.Linear(dimFeatureStudent,dimFeatureTeacher),
-            nn.BatchNorm1d(dimFeatureTeacher)
+            nn.BatchNorm1d(dimFeatureTeacher,affine=False,eps=1e-4)
         )
-        self.model2 = nn.BatchNorm1d(dimFeatureTeacher)
+        self.model2 = nn.BatchNorm1d(dimFeatureTeacher,affine=False,eps=1e-4)
     def forward(self,student_features,teacher_features):
         projected_student_features = self.model1(student_features)
         projected_teacher_features = self.model2(teacher_features)
-        #non per forza deve essere due la potenza, anzi
-        bo = (projected_student_features - projected_teacher_features) ** 2
-        sum = torch.sum(bo,dim = 1)
-        loss = torch.log(sum).mean()
+
+        squared_diff = (projected_student_features - projected_teacher_features) ** 2
+        sum_squared_diff = torch.sum(squared_diff,dim= 1)
+        norm_pow_alpha = sum_squared_diff ** (self.alpha / 2.0)
+        loss = torch.log(norm_pow_alpha).mean()
+
         return loss
 
 
@@ -52,8 +55,7 @@ class LinearReluDistiller(Projector):
     def __init__(self,dimFeatureStudent,dimFeatureTeacher):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Linear(dimFeatureStudent,dimFeatureTeacher),
-            #nn.ReLU()
+            nn.Linear(dimFeatureStudent,dimFeatureTeacher)
         )
     def forward(self,student_features,teacher_features):
         projected_student_features = self.model(student_features)

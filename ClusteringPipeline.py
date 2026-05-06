@@ -25,7 +25,7 @@ class ClusteringPipeline:
     def __init__(self, device=None):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def get_dataset(self, path="/mnt/windows/Users/kevin/Downloads/"):
+    def get_dataset(self):
         import pandas.core.tools.datetimes as _pd_dt_module
         _true_orig_to_datetime = _pd_dt_module.to_datetime
 
@@ -35,7 +35,7 @@ class ClusteringPipeline:
 
         pd.to_datetime = _patched_to_datetime
         # never use dataset, but use the metadata(it contains all IMAGES)
-        dataset = get_dataset(dataset="fmow", root_dir=path, download=False)
+        dataset = get_dataset(dataset="fmow", download = True)
         pd.to_datetime = _true_orig_to_datetime
 
         df = dataset.metadata.copy()
@@ -191,68 +191,6 @@ class ClusteringPipeline:
 
         return df
 
-    def visualize_embedding_space(self, df, color_by='category', method='tsne', random_state=42):
-        """
-        Visualizes the high-dimensional embedding space by reducing it to 2D.
-
-        Args:
-            df (pd.DataFrame): The dataframe containing the 'embedding' column.
-            color_by (str): The column name used to color the points (e.g., 'concept').
-            method (str): The dimensionality reduction technique ('tsne' or 'pca').
-            random_state (int): Random seed for reproducibility.
-        """
-
-        print(f"--- Reducing dimensionality using {method.upper()} ---")
-
-        # Unstack embeddings back into a 2D array
-        embeddings_matrix = np.stack(df['embedding'].values)
-
-        # Select and fit the dimensionality reduction model
-        if method.lower() == 'tsne':
-            # t-SNE is generally better for capturing non-linear local relationships in embeddings
-            reducer = TSNE(n_components=2, random_state=random_state, init='pca', learning_rate='auto')
-        elif method.lower() == 'pca':
-            # PCA is much faster, good for a quick global view
-            reducer = PCA(n_components=2, random_state=random_state)
-        else:
-            raise ValueError("Method must be 'tsne' or 'pca'.")
-
-        reduced_embeddings = reducer.fit_transform(embeddings_matrix)
-
-        # Create the plot
-        plt.figure(figsize=(14, 10))
-        unique_labels = df[color_by].unique()
-
-        # Use a colormap with enough distinct colors (tab20 supports up to 20 distinct colors)
-        cmap = plt.get_cmap('tab20')
-
-        # Scatter plot for each unique label to build the legend properly
-        for i, label in enumerate(unique_labels):
-            # Find the indices where the dataframe matches the current label
-            idx = df[color_by] == label
-
-            plt.scatter(
-                reduced_embeddings[idx, 0],
-                reduced_embeddings[idx, 1],
-                label=label,
-                alpha=0.7,
-                c=[cmap(i % 20)],  # Loop back through colors if more than 20 classes
-                edgecolors='w',
-                linewidth=0.5
-            )
-
-        plt.title(f"2D Embedding Space Visualization ({method.upper()})", fontsize=16)
-        plt.xlabel("Component 1", fontsize=12)
-        plt.ylabel("Component 2", fontsize=12)
-
-        # Place legend outside the plot so it doesn't overlap the data
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10, markerscale=1.5)
-
-        plt.grid(True, linestyle='--', alpha=0.3)
-        plt.tight_layout()
-        plt.show()
-
-
     def train_offline(self, model, df, criterion, optimizer, target_col='category', epochs=100, batch_size=32,
                       log_interval=5):
         """Builds DataLoaders directly from the unified dataframe and trains the model."""
@@ -321,7 +259,6 @@ class ClusteringPipeline:
         Simulates an online datastream using Test-Then-Train (Prequential Evaluation).
         Supports optional Feature-based Knowledge Distillation.
         """
-
         # 1. Create a mapping from class names to integers if not provided
         if class_to_idx is None:
             unique_classes = df[target_col].unique()
@@ -357,6 +294,7 @@ class ClusteringPipeline:
                 concept_correct = 0
                 concept_number_images = 0
                 current_concept = row_concept
+                # Remember to reset EMA after a concept drift if there is EMA
 
 
             index = row['original_index']
@@ -436,9 +374,9 @@ class ClusteringPipeline:
                     if distillator is not None:
                         student_features = student_output['features']
                         loss_distill = distillator(student_features, batch_teacher)
-
+                        #DA RIMUOVERE OCCHIO il coefficiente 0
                         # Combiniamo le loss
-                        total_loss = loss_ce + (distill_weight * loss_distill)
+                        total_loss = 0.0* loss_ce + (distill_weight * loss_distill)
 
                         loss_distill_history.append(loss_distill.item())
 
@@ -459,7 +397,7 @@ class ClusteringPipeline:
                     print(f"Loss distillation: {np.mean(loss_distill_history):.4f}")
                 print(
                     f"Sample visti: {concept_number_images} | Classi corrette: {concept_correct} | Accuratezza Cumulata: {acc_corrente:.2f}%")
-                # Svuotiamo i buffer per il prossimo ciclo
+                #Clear buffer for next cycle
                 buffer_imgs.clear()
                 buffer_labels.clear()
                 if distillator is not None:
@@ -549,7 +487,7 @@ class ClusteringPipeline:
                 for epoch in range(num_epochs_per_batch):
                     optimizer.zero_grad()
 
-                    # Forward pass solo del classificatore (istantaneo)
+                    # Forward pass solo del classificatore
                     logits = classifier(batch_features)
 
                     # Calcolo Loss e Backward
@@ -592,107 +530,3 @@ class ClusteringPipeline:
                 correct += (predicted == batch_y).sum().item()
 
         return running_loss / len(loader), 100 * correct / total
-
-
-
-    def visualize_category_images(self,df, category_name, num_images=5, get_input_fn = None):
-        """
-        Visualizes a specified number of images from a chosen category.
-
-        Args:
-            df: The dataframe containing 'category' and 'index' columns.
-            category_name: The string name of the category to visualize.
-            num_images: The number of images to display.
-            get_input_fn: The function used to load the image based on its index.
-        """
-        # Filter dataframe for the requested category
-        subset = df[df['category'] == category_name]
-
-        if subset.empty:
-            print(f"Error: Category '{category_name}' not found in the dataframe.")
-            return
-
-        # Ensure we don't request more images than available
-        actual_num_images = min(len(subset), num_images)
-        if actual_num_images < num_images:
-            print(f"Note: Only {actual_num_images} images available for '{category_name}'.")
-
-        # Randomly sample the indices
-        sampled_indices = subset.sample(n=actual_num_images, random_state=42)['index'].tolist()
-
-        # Calculate grid dimensions (max 5 columns for readability)
-        cols = min(actual_num_images, 5)
-        rows = math.ceil(actual_num_images / cols)
-
-        fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
-        fig.suptitle(f"Category: {category_name} ({actual_num_images} images)", fontsize=16)
-
-        # Flatten axes array for easy iteration, handling 1D and 2D arrays
-        if actual_num_images == 1:
-            axes = [axes]
-        elif rows > 1 or cols > 1:
-            axes = axes.flatten()
-
-        for i, ax in enumerate(axes):
-            if i < actual_num_images:
-                idx = sampled_indices[i]
-                img = get_input_fn(idx)  # Uses your existing image loading logic
-                ax.imshow(img)
-                ax.set_title(f"Idx: {idx}")
-                ax.axis('off')
-            else:
-                # Hide empty subplots if the grid isn't perfectly filled
-                ax.axis('off')
-
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.90)  # Adjust title spacing
-        plt.show()
-
-    def plot_performance_over_time(self, all_results):
-        """
-        Plots strictly the cumulative accuracy over time, grouped by experiment.
-        """
-        if not all_results:
-            print("No results to plot.")
-            return
-
-        # Extract unique experiment groups
-        experiment_groups = list(set(r['experiment_group'] for r in all_results))
-        experiment_groups.sort()
-
-        # Calculate grid dimensions for subplots
-        cols = min(2, len(experiment_groups))
-        rows = math.ceil(len(experiment_groups) / cols)
-
-        fig, axes = plt.subplots(rows, cols, figsize=(15, 6 * rows), squeeze=False)
-        fig.suptitle("Cumulative Accuracy Over Time", fontsize=20, y=1.02)
-        axes = axes.flatten()
-
-        for i, group_name in enumerate(experiment_groups):
-            ax = axes[i]
-            group_results = [r for r in all_results if r['experiment_group'] == group_name]
-
-            for res in group_results:
-                # Extract ONLY the global timeline and cumulative accuracy
-                total_samples = res['history']['total_samples_seen']
-                accuracy = res['history']['cumulative_accuracy']
-
-                # Create a label showing the hyperparameters used
-                label = " | ".join([f"{k}:{v}" for k, v in res['params'].items()])
-
-                # Plot strictly the accuracy curve
-                ax.plot(total_samples, accuracy, label=label, alpha=0.8, linewidth=2)
-
-            # Format the subplot
-            ax.set_title(group_name.replace("_", " "), fontsize=14, fontweight='bold')
-            ax.set_xlabel("Total Samples Seen", fontsize=12)
-            ax.set_ylabel("Cumulative Accuracy (%)", fontsize=12)
-            ax.grid(True, linestyle='--', alpha=0.5)
-            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=9)
-
-        # Hide unused subplots if the grid isn't perfectly filled
-        for j in range(len(experiment_groups), len(axes)):
-            axes[j].axis('off')
-
-        plt.tight_layout()
-        plt.show()
