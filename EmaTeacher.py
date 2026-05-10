@@ -19,6 +19,9 @@ class EmaTeacher(nn.Module):
         with torch.no_grad():
             for ema_param, student_param in zip(self.emaTeacher.parameters(), student.parameters()):
                 ema_param.data.mul_(self.alpha).add_(student_param.data, alpha=1 - self.alpha)
+            # Update buffers (Crucial for BatchNorm)
+            for ema_buffer, student_buffer in zip(self.emaTeacher.buffers(), student.buffers()):
+                ema_buffer.data.copy_(student_buffer.data)
 
     def predict(self,inputTensor):
         self.emaTeacher.eval()

@@ -51,13 +51,13 @@ class ClusteringPipeline:
         """Samples a balanced subset from the main dataframe."""
 
         #filtering based on year and state, just to simplify
-        filtered_df = df[df['category'].isin(
-            ["stadium","swimming_pool", "multi-unit_residential", "recreational_facility","park",
-             "airport_hangar", "airport_terminal", "crop_field", "amusement_park", "military_facility",
-             "nuclear_powerplant","airport", "runway","aquaculture", "wind_farm"])].copy()
+        #filtered_df = df[df['category'].isin(
+            #["stadium","swimming_pool", "multi-unit_residential", "recreational_facility","park",
+             #"airport_hangar", "airport_terminal", "crop_field", "amusement_park", "military_facility",
+             #"nuclear_powerplant","airport", "runway","aquaculture", "wind_farm"])].copy()
 
         #filtered_df = df[df['category'].isin(["crop_field","airport_terminal"])]
-        #filtered_df = df.copy()
+        filtered_df = df.copy()
         print(f"--- Sampling {samples_per_class} images per class ---")
         sample_indices = []
 
