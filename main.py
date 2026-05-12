@@ -92,7 +92,7 @@ def main():
             class_to_idx=class_to_idx,
             transform_fn=transform_imagenet,
             use_embeddings=False,
-            epochs=4,
+            epochs=100,
             batch_size=64,
             lr=1e-3,
             patience=5
