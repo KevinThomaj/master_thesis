@@ -21,7 +21,7 @@ class TrainingManager:
     def pretrain_student(
             self,
             student,
-            df_train,
+            df,
             manager,
             class_to_idx,
             transform_fn,
@@ -30,7 +30,6 @@ class TrainingManager:
             batch_size=64,
             lr=1e-3,
             patience=5,
-            device='cuda',
             projector=None,
             lambda_distill=1.0
     ):
@@ -40,26 +39,36 @@ class TrainingManager:
         """
         print(f"\n--- Initializing Pretraining (Distillation/Embeddings: {use_embeddings}) ---")
 
-        # 1. Stratified Train/Val Split (80% Train, 20% Val)
-        train_df, val_df = train_test_split(
-            df_train, test_size=0.2, stratify=df_train['category'], random_state=42
+        # 1. Stratified Train/Val/Test Split (80% Train, 10% Val, 10% Test)
+        # First split: 80% Train, 20% Temp (which will be split into Val and Test)
+        train_df, temp_df = train_test_split(
+            df, test_size=0.2, stratify=df['category'], random_state=42
         )
-        print(f"Training on {len(train_df)} samples, Validating on {len(val_df)} samples.")
+
+        # Second split: 50% of the Temp goes to Validation, 50% to Test (i.e. 10% / 10% of total)
+        val_df, test_df = train_test_split(
+            temp_df, test_size=0.5, stratify=temp_df['category'], random_state=42
+        )
+
+        print(
+            f"Training on {len(train_df)} samples, Validating on {len(val_df)} samples, Testing on {len(test_df)} samples.")
 
         # 2. Setup DataLoaders with the unified dataset
         train_dataset = FmowTorchDataset(train_df, manager, class_to_idx, transform_fn, use_embeddings)
         val_dataset = FmowTorchDataset(val_df, manager, class_to_idx, transform_fn, use_embeddings)
+        test_dataset = FmowTorchDataset(test_df, manager, class_to_idx, transform_fn, use_embeddings)
 
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
         # 3. Setup Optimizers & Devices
         criterion_ce = nn.CrossEntropyLoss()
-        student = student.to(device)
+        student = student.to(self.device)
 
         trainable_params = list(student.parameters())
         if projector is not None:
-            projector = projector.to(device)
+            projector = projector.to(self.device)
             trainable_params += list(projector.parameters())
 
         optimizer = optim.Adam(trainable_params, lr=lr)
@@ -68,7 +77,7 @@ class TrainingManager:
         best_val_loss = float('inf')
         epochs_no_improve = 0
         best_student_wts = copy.deepcopy(student.state_dict())
-        best_projector_wts = copy.deepcopy(projector.state_dict())
+        best_projector_wts = copy.deepcopy(projector.state_dict()) if projector else None
 
         # 5. Training Loop
         for epoch in range(epochs):
@@ -83,11 +92,11 @@ class TrainingManager:
                 # --- DYNAMIC UNPACKING ---
                 if use_embeddings:
                     imgs, teacher_features, labels = batch
-                    teacher_features = teacher_features.to(device)
+                    teacher_features = teacher_features.to(self.device)
                 else:
                     imgs, labels = batch
 
-                imgs, labels = imgs.to(device), labels.to(device)
+                imgs, labels = imgs.to(self.device), labels.to(self.device)
 
                 # Forward Student
                 outputs = student(imgs)
@@ -123,11 +132,11 @@ class TrainingManager:
                     # --- DYNAMIC UNPACKING ---
                     if use_embeddings:
                         imgs, teacher_features, labels = batch
-                        teacher_features = teacher_features.to(device)
+                        teacher_features = teacher_features.to(self.device)
                     else:
                         imgs, labels = batch
 
-                    imgs, labels = imgs.to(device), labels.to(device)
+                    imgs, labels = imgs.to(self.device), labels.to(self.device)
 
                     outputs = student(imgs)
                     logits = outputs['logits']
@@ -168,6 +177,50 @@ class TrainingManager:
         student.load_state_dict(best_student_wts)
         if projector is not None:
             projector.load_state_dict(best_projector_wts)
+
+        # ------------------------------------------------------------------
+        # 8. TEST PHASE (Extracted from df)
+        # ------------------------------------------------------------------
+        print("\n--- Evaluating on Test Set ---")
+        student.eval()
+        if projector: projector.eval()
+
+        test_loss = 0.0
+        test_correct = 0
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Testing"):
+                if use_embeddings:
+                    imgs, teacher_features, labels = batch
+                    teacher_features = teacher_features.to(self.device)
+                else:
+                    imgs, labels = batch
+
+                imgs, labels = imgs.to(self.device), labels.to(self.device)
+
+                outputs = student(imgs)
+                logits = outputs['logits']
+                features_stud = outputs['features']
+
+                loss_ce = criterion_ce(logits, labels)
+
+                if use_embeddings and projector is not None:
+                    loss_distill = projector(features_stud, teacher_features)
+                    loss = loss_ce + (lambda_distill * loss_distill)
+                else:
+                    loss = loss_ce
+
+                test_loss += loss.item() * imgs.size(0)
+                preds = torch.argmax(logits, dim=1)
+                test_correct += torch.sum(preds == labels.data)
+
+        test_loss /= len(test_loader.dataset)
+        test_acc = test_correct.double() / len(test_loader.dataset)
+
+        print(f"Final Test Loss: {test_loss:.4f} | Final Test Acc: {test_acc:.4f}")
+        # ------------------------------------------------------------------
+
+        if projector is not None:
             return student, projector
 
         return student, None
@@ -181,7 +234,7 @@ class TrainingManager:
                      transform_fn,
                      class_to_idx,
                      target_col='category',
-                     batch_size=50,
+                     batch_size=25,
                      num_epochs_per_batch=1,
                      distillator=None,
                      distill_weight=1.0,
