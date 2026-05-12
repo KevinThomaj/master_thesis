@@ -1,0 +1,23 @@
+# PyTorch Ecosystem
+torch
+torchvision
+
+# Machine Learning & Vision Models
+timm
+scikit-learn
+
+# Data Manipulation & I/O
+numpy
+pandas
+pyarrow
+Pillow
+
+# FMoW Dataset
+wilds
+
+# Math & Clustering
+scipy
+
+# Utilities & Visualization
+tqdm
+matplotlib
