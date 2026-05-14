@@ -144,14 +144,14 @@ def main():
     print("=======================================================")
     # Initialize without ImageNet weights, then load our custom preDF weights
     student_inf = Student(numberOfClasses=num_classes, pretrained=False).to(device)
-    student_inf.load_state_dict(torch.load(weights_path))
+    student_inf.load_state_dict(torch.load(weights_path, map_location=device))
 
     acc_inf, hist_inf = training_manager.train_online(
         model=student_inf,
         df=postDF_sampled,
         criterion=criterion,
         optimizer=None,
-        get_input_fn=manager.get_input,
+        manager = manager,
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=True,
@@ -162,7 +162,7 @@ def main():
     print(" EXPERIMENT 2: ONLINE FINE-TUNING (Pretrained Student)")
     print("=======================================================")
     student_ft = Student(numberOfClasses=num_classes, pretrained=False).to(device)
-    student_ft.load_state_dict(torch.load(weights_path))
+    student_ft.load_state_dict(torch.load(weights_path, map_location=device))
 
     optimizer_ft = optim.Adam(student_ft.parameters(), lr=1e-4)
 
@@ -171,7 +171,7 @@ def main():
         df=postDF_sampled,
         criterion=criterion,
         optimizer=optimizer_ft,
-        get_input_fn=manager.get_input,
+        manager = manager,
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=False,

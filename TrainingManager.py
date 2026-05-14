@@ -230,7 +230,7 @@ class TrainingManager:
                      df,
                      criterion,
                      optimizer,
-                     get_input_fn,
+                     manager,  # Need to pass manager for FmowTorchDataset
                      transform_fn,
                      class_to_idx,
                      target_col='category',
@@ -241,9 +241,28 @@ class TrainingManager:
                      ema=None,
                      inference_only=False):
         """
-        Gestisce dinamicamente tutte le 5 varianti di stream:
-        Inference Only, Standard Fine-tuning, Feature Distillation, ed EMA.
+        Ottimizzato con DataLoader (I/O asincrono), inferenza batched su GPU,
+        e calcolo dell'accuratezza globale.
         """
+
+        # 1. SETUP DATALOADER
+        use_emb = (distillator is not None and not inference_only)
+        stream_dataset = FmowTorchDataset(
+            df=df,
+            manager=manager,
+            class_to_idx=class_to_idx,
+            transform=transform_fn,
+            use_embeddings=use_emb
+        )
+
+        # num_workers=4 will fetch images from disk in the background while the GPU trains
+        stream_loader = DataLoader(
+            stream_dataset,
+            batch_size=batch_size,
+            shuffle=False,  # MUST BE FALSE to maintain temporal stream order
+            num_workers=4,
+            pin_memory=True
+        )
 
         model = model.to(self.device)
 
@@ -253,109 +272,104 @@ class TrainingManager:
             'drift_points': []
         }
 
-        buffer_imgs = []
-        buffer_labels = []
-        buffer_teacher_features = []
-
+        # Counters
+        global_correct = 0
+        global_total = 0
         concept_correct = 0
         concept_number_images = 0
-        current_concept = 0
+        current_concept = None
         total_samples_seen = 0
 
-        for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Stream (Inference Only: {inference_only})"):
-            total_samples_seen += 1
-            row_concept = row['concept']
+        # Iterate over the DataLoader
+        for batch in tqdm(stream_loader, desc=f"Stream (Inference Only: {inference_only})"):
 
-            # --- DRIFT DETECTION ---
-            if row_concept != current_concept:
-                print(f"\n--- DRIFT DETECTED: Transition da Concept {current_concept} a Concept {row_concept} ---")
-                history['drift_points'].append(total_samples_seen)
-                concept_correct = 0
-                concept_number_images = 0
-                current_concept = row_concept
+            # --- 2. UNPACK BATCH ---
+            if use_emb:
+                batch_imgs, batch_teacher, batch_labels = batch
+                batch_teacher = batch_teacher.to(self.device)
+            else:
+                batch_imgs, batch_labels = batch
 
-            index = row['image_index']
-            category = row[target_col]
+            batch_imgs = batch_imgs.to(self.device)
+            batch_labels = batch_labels.to(self.device)
 
-            # --- 1. CARICAMENTO DATI ---
-            img_pil = get_input_fn(index)
-            img_tensor = transform_fn(img_pil).unsqueeze(0).to(self.device)
-
-            label_idx = class_to_idx[category]
-            label_tensor = torch.tensor([label_idx], dtype=torch.long).to(self.device)
-
-            # Estraiamo l'embedding del teacher SOLO se stiamo facendo distillazione attiva
-            if distillator is not None and not inference_only:
-                teacher_feat = torch.tensor(row['embedding'], dtype=torch.float32).unsqueeze(0).to(self.device)
-                buffer_teacher_features.append(teacher_feat)
-
-            # --- 2. PREQUENTIAL EVALUATION (TEST FASE) ---
+            # --- 3. PREQUENTIAL EVALUATION (TEST FASE BATCHED) ---
             if distillator is not None:
                 distillator.eval()
 
             if ema is not None:
-                prediction_logits = ema.predict(img_tensor)  # Usa la logica predict del tuo EMA wrapper
-                predicted_class = torch.argmax(prediction_logits, dim=1)
+                with torch.no_grad():
+                    prediction_logits = ema.predict(batch_imgs)
             else:
                 model.eval()
                 with torch.no_grad():
-                    prediction_output = model(img_tensor)
+                    prediction_output = model(batch_imgs)
                     prediction_logits = prediction_output['logits']
-                    predicted_class = torch.argmax(prediction_logits, dim=1)
 
-            if predicted_class.item() == label_idx:
-                concept_correct += 1
-            concept_number_images += 1
+            predicted_classes = torch.argmax(prediction_logits, dim=1)
 
-            acc_corrente = (concept_correct / concept_number_images) * 100 if concept_number_images > 0 else 0
+            # --- 4. SEQUENTIAL METRIC TRACKING (DRIFT DETECTION) ---
+            # We iterate through the batch locally to track exactly *when* drift happens
+            for i in range(len(batch_imgs)):
+                # Because shuffle=False, total_samples_seen perfectly matches df index
+                row_concept = df.iloc[total_samples_seen]['concept']
 
-            # --- 3. BIVIO INFERENZA VS TRAINING ---
-            history['total_samples_seen'].append(total_samples_seen)
-            history['cumulative_accuracy'].append(acc_corrente)
+                if current_concept is None:
+                    current_concept = row_concept
+                elif row_concept != current_concept:
+                    print(f"\n--- DRIFT DETECTED: Transition da Concept {current_concept} a Concept {row_concept} ---")
+                    history['drift_points'].append(total_samples_seen)
+                    concept_correct = 0
+                    concept_number_images = 0
+                    current_concept = row_concept
+
+                is_correct = (predicted_classes[i] == batch_labels[i]).item()
+                if is_correct:
+                    concept_correct += 1
+                    global_correct += 1
+
+                concept_number_images += 1
+                global_total += 1
+                total_samples_seen += 1
+
+                acc_corrente = (concept_correct / concept_number_images) * 100
+                history['total_samples_seen'].append(total_samples_seen)
+                history['cumulative_accuracy'].append(acc_corrente)
+
+            # --- 5. BIVIO INFERENZA VS TRAINING ---
             if inference_only:
                 continue
-            # --- 4. BUFFERING E TRAINING (ONLINE LEARNING) ---
-            buffer_imgs.append(img_tensor)
-            buffer_labels.append(label_tensor)
 
-            if len(buffer_imgs) == batch_size:
-                model.train()
+            # --- 6. TRAINING (ONLINE LEARNING) ---
+            model.train()
+            if distillator is not None:
+                distillator.train()
+
+            for epoch in range(num_epochs_per_batch):
+                optimizer.zero_grad()
+
+                student_output = model(batch_imgs)
+                logits = student_output['logits']
+
+                loss_ce = criterion(logits, batch_labels)
+                total_loss = loss_ce
+
                 if distillator is not None:
-                    distillator.train()
+                    student_features = student_output['features']
+                    loss_distill = distillator(student_features, batch_teacher)
+                    total_loss = loss_ce + (distill_weight * loss_distill)
 
-                batch_imgs = torch.cat(buffer_imgs, dim=0)
-                batch_labels = torch.cat(buffer_labels, dim=0)
-                if distillator is not None:
-                    batch_teacher = torch.cat(buffer_teacher_features, dim=0)
+                total_loss.backward()
+                optimizer.step()
 
-                for epoch in range(num_epochs_per_batch):
-                    optimizer.zero_grad()
+            if ema is not None:
+                ema.update(model)
 
-                    student_output = model(batch_imgs)
-                    logits = student_output['logits']
-
-                    loss_ce = criterion(logits, batch_labels)
-                    total_loss = loss_ce
-
-                    if distillator is not None:
-                        student_features = student_output['features']
-                        loss_distill = distillator(student_features, batch_teacher)
-                        total_loss = loss_ce + (distill_weight * loss_distill)
-
-                    total_loss.backward()
-                    optimizer.step()
-
-                # Update dell'EMA dopo che i pesi del modello principale sono stati aggiornati
-                if ema is not None:
-                    ema.update(model)
-
-                # Svuota i buffer
-                buffer_imgs.clear()
-                buffer_labels.clear()
-                if distillator is not None:
-                    buffer_teacher_features.clear()
-
+        # --- 7. FINAL METRICS ---
         final_acc = (concept_correct / concept_number_images) * 100 if concept_number_images > 0 else 0
+        global_acc = (global_correct / global_total) * 100 if global_total > 0 else 0
+
         print(f"\n--- Fine Stream | Accuratezza Finale Concept {current_concept}: {final_acc:.2f}% ---")
+        print(f"--- Accuratezza Globale (Tutti i Concept): {global_acc:.2f}% ---")
 
         return final_acc, history
