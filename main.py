@@ -155,7 +155,8 @@ def main():
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=True,
-        num_epochs_per_batch=1
+        num_epochs_per_batch=1,
+        batch_size=50
     )
 
     print("\n=======================================================")
@@ -176,7 +177,8 @@ def main():
         class_to_idx=class_to_idx,
         inference_only=False,
         distillator=None,
-        num_epochs_per_batch=1
+        num_epochs_per_batch=1,
+        batch_size=50
     )
 
 
