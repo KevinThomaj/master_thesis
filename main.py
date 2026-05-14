@@ -56,7 +56,7 @@ def main():
     postDF_sampled = manager.sample_dataset(
         postDF_top25,
         category_col='category',
-        samples_per_class=500,
+        samples_per_class=1000,
         random_state=42
     )
 
@@ -164,7 +164,7 @@ def main():
     student_ft = Student(numberOfClasses=num_classes, pretrained=False).to(device)
     student_ft.load_state_dict(torch.load(weights_path, map_location=device))
 
-    optimizer_ft = optim.Adam(student_ft.parameters(), lr=1e-4)
+    optimizer_ft = optim.Adam(student_ft.parameters(), lr=1e-3)
 
     acc_ft, hist_ft = training_manager.train_online(
         model=student_ft,
@@ -190,8 +190,8 @@ def main():
     distillator = LinearReluDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
 
     optimizer_dist = optim.Adam([
-        {'params': student_dist.parameters(), 'lr': 1e-4},
-        {'params': distillator.parameters(), 'lr': 1e-3}
+        {'params': student_dist.parameters(), 'lr': 1e-3},
+        {'params': distillator.parameters(), 'lr': 1e-2}
     ])
 
     acc_dist, hist_dist = training_manager.train_online(
