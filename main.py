@@ -56,7 +56,7 @@ def main():
     postDF_sampled = manager.sample_dataset(
         postDF_top25,
         category_col='category',
-        samples_per_class=1000,
+        samples_per_class=3000,
         random_state=42
     )
 
