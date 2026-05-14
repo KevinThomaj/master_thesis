@@ -45,7 +45,7 @@ def main():
     preDF_sampled = manager.sample_dataset(
         preDF_top25,
         category_col='category',
-        samples_per_class=1500,
+        samples_per_class=2200,
         random_state=42
     )
 
