@@ -31,6 +31,12 @@ def main():
     print("\n--- STEP 2: Divide into preDF (2002-2013) and postDF (2016-2017) ---")
     preDF, postDF = manager.divide(total_df)
 
+    fm_model = FoundationModel().to(device)
+    print("\n--- STEP 3.5: Pretraining unsupervised Foundation Model on all data from 2002-2013  ---")
+    # TODO Check if there are weights for foundational model, if not pretrain, otherwise load the weights
+    #training_manager.pretrain_teacher(self,...)
+
+
     # Find the 25 most popular classes in preDF
     top_25_classes = preDF['category'].value_counts().nlargest(25).index.tolist()
     print(f"Top 25 classes identified: {top_25_classes}")
@@ -105,10 +111,8 @@ def main():
         del student_base, student_pretrained
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    '''
-    print("\n--- STEP 6: Extracting Foundation Model Embeddings for PostDF ---")
-    fm_model = FoundationModel().to(device)
 
+    print("\n--- STEP 6: Extracting Foundation Model Embeddings for PostDF ---")
     # We need the embeddings explicitly calculated before the stream
     postDF_sampled = manager.get_embeddings(
         df_sample=postDF_sampled,
@@ -122,7 +126,6 @@ def main():
     del fm_model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    '''
 
 
     # Shuffle the dataset
@@ -182,12 +185,11 @@ def main():
     )
 
 
-    '''
     print("\n=======================================================")
     print(" EXPERIMENT 3: ONLINE FINE-TUNING + DISTILLATION (Pretrained Student)")
     print("=======================================================")
     student_dist = Student(numberOfClasses=num_classes, pretrained=False).to(device)
-    student_dist.load_state_dict(torch.load(weights_path))
+    student_dist.load_state_dict(torch.load(weights_path,map_location=device))
 
     distillator = LinearReluDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
 
@@ -201,15 +203,15 @@ def main():
         df=postDF_sampled,
         criterion=criterion,
         optimizer=optimizer_dist,
-        get_input_fn=manager.get_input,
+        manager = manager,
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=False,
         distillator=distillator,
         distill_weight=1.0,
-        num_epochs_per_batch=1
+        num_epochs_per_batch=1,
+        batch_size=50
     )
-    '''
 
     print("\n--- STEP 8: Exporting Results for Local Plotting ---")
     results_payload = {
@@ -221,6 +223,10 @@ def main():
             "final_accuracy": acc_ft,
             "history": hist_ft
         },
+        "distillation": {
+            "final_accuracy": acc_dist,
+            "history": hist_dist
+        }
     }
 
     output_file = "experiment_results.json"

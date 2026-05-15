@@ -20,6 +20,9 @@ def main():
     hist_ft = results["fine_tuning"]["history"]
     acc_ft = results["fine_tuning"]["final_accuracy"]
 
+    hist_dist = results["distillation"]["history"]
+    acc_dist = results["distillation"]["final_accuracy"]
+
     # 3. Setup the plot
     plt.figure(figsize=(12, 7))
 
@@ -30,6 +33,10 @@ def main():
     # Plot Online Fine-Tuning
     plt.plot(hist_ft['total_samples_seen'], hist_ft['cumulative_accuracy'],
              label=f"Online Fine-Tuning [{acc_ft:.1f}%]", color='blue', linewidth=2.5)
+
+    # Plot Distillation
+    plt.plot(hist_dist['total_samples_seen'], hist_dist['cumulative_accuracy'],
+             label=f"Online Fine-Tuning and Linear Distillation [{acc_dist:.1f}%]", color='yellow', linewidth=1.5)
 
     # Add Concept Drift markers (Using drift points from the inference history)
     for drift_pt in hist_inf['drift_points']:
