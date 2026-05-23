@@ -32,7 +32,7 @@ def main():
 
     print("\n--- STEP 2: Divide into preDF (2002-2013) and postDF (2016-2017) ---")
     preDF, postDF = manager.divide(total_df)
-    '''
+
     fm_model = FoundationModel(use_lora=True).to(device)
     fm_weights_path = "./pretrained_dinov2_lora.pth"
     print("\n--- STEP 3: Extended Pretraining unsupervised Foundation Model on all data from 2002-2013 ---")
@@ -53,9 +53,8 @@ def main():
             accumulation_steps=4
         )
         fm_model.eval()
-    '''
-    fm_model = FoundationModel(use_lora=False).to(device)
-    fm_model.eval()
+    #fm_model = FoundationModel(use_lora=False).to(device)
+    #fm_model.eval()
 
     # Find the 25 most popular classes in preDF
     top_25_classes = preDF['category'].value_counts().nlargest(25).index.tolist()
