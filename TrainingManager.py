@@ -72,7 +72,7 @@ class TrainingManager:
             batch_size=batch_size,
             shuffle=True,
             collate_fn=custom_collate,
-            num_workers=4,
+            num_workers=8,
             pin_memory=True,
             drop_last=True
         )
