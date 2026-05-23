@@ -49,8 +49,8 @@ def main():
             manager=manager,
             save_path=fm_weights_path,
             epochs=25,
-            batch_size=128,  # Depends on your VRAM, adjust if OOM
-            accumulation_steps=2
+            batch_size=64,  # Depends on your VRAM, adjust if OOM
+            accumulation_steps=4
         )
         fm_model.eval()
     #fm_model = FoundationModel(use_lora=False).to(device)
