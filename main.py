@@ -177,7 +177,7 @@ def main():
         class_to_idx=class_to_idx,
         inference_only=True,
         num_epochs_per_batch=1,
-        batch_size=50 # try with 10 as batch_size
+        batch_size=10 # try with 10 as batch_size
     )
 
     print("\n=======================================================")
@@ -199,7 +199,7 @@ def main():
         inference_only=False,
         distillator=None,
         num_epochs_per_batch=1,
-        batch_size=50 # try with 10 as batch_size
+        batch_size=10 # try with 10 as batch_size
     )
 
 
@@ -228,7 +228,7 @@ def main():
         distillator=distillator,
         distill_weight=1.0,
         num_epochs_per_batch=1,
-        batch_size=50 # try with 10 as batch_size
+        batch_size=10 # try with 10 as batch_size
     )
 
     print("\n--- STEP 8: Exporting Results for Local Plotting ---")
