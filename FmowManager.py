@@ -113,8 +113,9 @@ class FmowManager:
 
                 # Memory Cleanup
                 del batch_imgs, features
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # 3. Reconstruct into a Matrix
         embeddings_matrix = np.concatenate(all_embeddings, axis=0)

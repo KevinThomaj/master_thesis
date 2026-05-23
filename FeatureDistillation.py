@@ -26,6 +26,7 @@ class Projector(nn.Module):
 
 
 #remember to do batch normalization
+'''
 class LinearBNLogSumDistiller(Projector):
     def __init__(self,dimFeatureStudent,dimFeatureTeacher):
         super().__init__()
@@ -45,13 +46,13 @@ class LinearBNLogSumDistiller(Projector):
         loss = torch.log(norm_pow_alpha).mean()
 
         return loss
+'''
 
-
-#in the code I will need just to do this  distiller = LinearReluDistiller(dim1,dim2)
+#in the code I will need just to do this  distiller = LinearDistiller(dim1,dim2)
 # loss = distiller(stud_feat, teacher_feat)
 # loss.backward()
 
-class LinearReluDistiller(Projector):
+class LinearDistiller(Projector):
     def __init__(self,dimFeatureStudent,dimFeatureTeacher):
         super().__init__()
         self.model = nn.Sequential(

@@ -8,11 +8,13 @@ import torchvision.transforms as T
 from FmowManager import FmowManager
 from TrainingManager import TrainingManager
 from FoundationModel import FoundationModel
-from FeatureDistillation import LinearReluDistiller
+from FeatureDistillation import LinearDistiller
 from Student import Student
 
 
 def main():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     # --- DEVICE CHECK ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n{'=' * 55}")
@@ -30,12 +32,30 @@ def main():
 
     print("\n--- STEP 2: Divide into preDF (2002-2013) and postDF (2016-2017) ---")
     preDF, postDF = manager.divide(total_df)
+    '''
+    fm_model = FoundationModel(use_lora=True).to(device)
+    fm_weights_path = "./pretrained_dinov2_lora.pth"
+    print("\n--- STEP 3: Extended Pretraining unsupervised Foundation Model on all data from 2002-2013 ---")
 
-    fm_model = FoundationModel().to(device)
-    print("\n--- STEP 3.5: Pretraining unsupervised Foundation Model on all data from 2002-2013  ---")
-    # TODO Check if there are weights for foundational model, if not pretrain, otherwise load the weights
-    #training_manager.pretrain_teacher(self,...)
-
+    if os.path.exists(fm_weights_path):
+        print(f"Found existing Foundation Model weights at {fm_weights_path}. Loading...")
+        fm_model.load_state_dict(torch.load(fm_weights_path, map_location=device))
+        fm_model.eval()  # Important: set back to eval mode for feature extraction
+    else:
+        print("No weights found. Commencing DINO Extended Pre-training...")
+        training_manager.pretrain_teacher(
+            foundation_model=fm_model,
+            df=preDF,  # Use all 140k images, not just top 25!
+            manager=manager,
+            save_path=fm_weights_path,
+            epochs=25,
+            batch_size=64,  # Depends on your VRAM, adjust if OOM
+            accumulation_steps=4
+        )
+        fm_model.eval()
+    '''
+    fm_model = FoundationModel(use_lora=False).to(device)
+    fm_model.eval()
 
     # Find the 25 most popular classes in preDF
     top_25_classes = preDF['category'].value_counts().nlargest(25).index.tolist()
@@ -47,7 +67,7 @@ def main():
     # Create the mapping required for the TorchDataset
     class_to_idx = {cls_name: idx for idx, cls_name in enumerate(top_25_classes)}
 
-    print("\n--- STEP 3: Sample 1500 images per class in preDF (top 25 classes) ---")
+    print("\n--- STEP 4: Sample 2200 images per class in preDF (top 25 classes) ---")
     preDF_sampled = manager.sample_dataset(
         preDF_top25,
         category_col='category',
@@ -55,7 +75,7 @@ def main():
         random_state=42
     )
 
-    print("\n--- STEP 4: Sample 500 images per class in postDF, shuffle, create/order by concepts ---")
+    print("\n--- STEP 5: Sample 2300 images per class in postDF, shuffle, create/order by concepts ---")
     # Filter postDF to include the SAME 25 classes
     postDF_top25 = postDF[postDF['category'].isin(top_25_classes)].copy()
 
@@ -75,7 +95,7 @@ def main():
     criterion = nn.CrossEntropyLoss()
     num_classes = 25
 
-    print("\n--- STEP 5: Offline Pretraining on preDF (2002-2013) ---")
+    print("\n--- STEP 6: Offline Pretraining on preDF (2002-2013) ---")
 
     # ---------------------------------------------------------
     # PATH TO YOUR PRETRAINED WEIGHTS
@@ -98,9 +118,9 @@ def main():
             class_to_idx=class_to_idx,
             transform_fn=transform_imagenet,
             use_embeddings=False,
-            epochs=100,
+            epochs=50,
             batch_size=64,
-            lr=1e-3,
+            lr=1e-4,
             patience=5
         )
 
@@ -112,7 +132,7 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    print("\n--- STEP 6: Extracting Foundation Model Embeddings for PostDF ---")
+    print("\n--- STEP 7: Extracting Foundation Model Embeddings for PostDF ---")
     # We need the embeddings explicitly calculated before the stream
     postDF_sampled = manager.get_embeddings(
         df_sample=postDF_sampled,
@@ -140,7 +160,7 @@ def main():
 
 
 
-    print("\n--- STEP 7: STREAMING EXPERIMENTS (2016-2017) ---")
+    print("\n--- STEP 8: STREAMING EXPERIMENTS (2016-2017) ---")
 
     print("\n=======================================================")
     print(" EXPERIMENT 1: PURE INFERENCE (Pretrained Student)")
@@ -148,7 +168,6 @@ def main():
     # Initialize without ImageNet weights, then load our custom preDF weights
     student_inf = Student(numberOfClasses=num_classes, pretrained=False).to(device)
     student_inf.load_state_dict(torch.load(weights_path, map_location=device))
-
     acc_inf, hist_inf = training_manager.train_online(
         model=student_inf,
         df=postDF_sampled,
@@ -159,7 +178,7 @@ def main():
         class_to_idx=class_to_idx,
         inference_only=True,
         num_epochs_per_batch=1,
-        batch_size=50
+        batch_size=50 # try with 10 as batch_size
     )
 
     print("\n=======================================================")
@@ -181,7 +200,7 @@ def main():
         inference_only=False,
         distillator=None,
         num_epochs_per_batch=1,
-        batch_size=50
+        batch_size=50 # try with 10 as batch_size
     )
 
 
@@ -191,7 +210,7 @@ def main():
     student_dist = Student(numberOfClasses=num_classes, pretrained=False).to(device)
     student_dist.load_state_dict(torch.load(weights_path,map_location=device))
 
-    distillator = LinearReluDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
+    distillator = LinearDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
 
     optimizer_dist = optim.Adam([
         {'params': student_dist.parameters(), 'lr': 1e-3},
@@ -210,7 +229,7 @@ def main():
         distillator=distillator,
         distill_weight=1.0,
         num_epochs_per_batch=1,
-        batch_size=50
+        batch_size=50 # try with 10 as batch_size
     )
 
     print("\n--- STEP 8: Exporting Results for Local Plotting ---")

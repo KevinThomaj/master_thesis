@@ -1,4 +1,9 @@
 import copy
+from lightly.data import DINOCollateFunction
+from lightly.loss import DINOLoss
+from lightly.models.utils import update_momentum
+from torch.cuda.amp import GradScaler, autocast
+import os
 
 import numpy as np
 import torch
@@ -15,8 +20,132 @@ class TrainingManager:
     def __init__(self, device=None):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def pretrain_teacher(self):
-        pass
+    def pretrain_teacher(
+            self,
+            foundation_model,
+            df,
+            manager,
+            save_path="./pretrained_dinov2_lora.pth",
+            epochs=25,
+            batch_size=32,  # Local batch size
+            accumulation_steps=8,  # Effective batch size = 32 * 8 = 256
+            lr=1e-3,
+    ):
+        print("\n--- Starting Extended DINOv2 Pre-training with LoRA ---")
+
+        from FoundationModel import DINOPretrainWrapper
+        dino_wrapper = DINOPretrainWrapper(foundation_model).to(self.device)
+
+        # 1. Multi-Crop Augmentation Pipeline (Lightly)
+        # Yields 2 global crops (224x224) and 6 local crops (98x98)
+        # 1. Multi-Crop Augmentation Pipeline (Lightly)
+        lightly_collate = DINOCollateFunction(
+            global_crop_size=224,
+            global_crop_scale=(0.4, 1.0),
+            local_crop_size=98,
+            local_crop_scale=(0.05, 0.4),
+            n_local_views=6
+        )
+
+        # --- 🚨 ADAPTER FIX: Wrap the collate function ---
+        def custom_collate(batch):
+            # FmowTorchDataset returns a list of 2-tuples: (image, label)
+            # Lightly expects 3-tuples: (image, label, filename)
+            # We append a dummy string to each item to prevent the crash
+            adapted_batch = [(img, label, "dummy_file") for img, label in batch]
+            return lightly_collate(adapted_batch)
+
+        # -------------------------------------------------
+
+        # 2. Dataset Setup
+        # We pass transform=None because DINOCollateFunction expects raw PIL images
+        pretrain_dataset = FmowTorchDataset(
+            df=df,
+            manager=manager,
+            class_to_idx={cat: 0 for cat in df['category'].unique()},
+            transform=None,
+            use_embeddings=False
+        )
+
+        data_loader = DataLoader(
+            pretrain_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=custom_collate,
+            num_workers=4,
+            pin_memory=True,
+            drop_last=True
+        )
+
+        # 3. Loss and Optimizer
+        criterion = DINOLoss(
+            output_dim=65536,
+            warmup_teacher_temp_epochs=10,  # Crucial for DINO stability
+        ).to(self.device)
+
+        # Only pass parameters that require gradients (LoRA + Student Head)
+        optimizer = optim.AdamW(
+            filter(lambda p: p.requires_grad, dino_wrapper.parameters()), #only student parameters
+            lr=lr,
+            weight_decay=1e-4
+        )
+
+        # 4. Training Loop
+        for epoch in range(epochs):
+            dino_wrapper.train()
+            total_loss = 0.0
+
+            # Update DINO Loss epoch (for temperature scheduling)
+            criterion.epoch = epoch
+
+            progress_bar = tqdm(data_loader, desc=f"Epoch {epoch + 1}/{epochs} [DINO SSL]")
+            optimizer.zero_grad()
+
+            for step, batch in enumerate(progress_bar):
+                # Lightly collate_fn returns: (list_of_views, labels, filenames)
+                views = batch[0]
+                views = [view.to(self.device) for view in views]
+                global_views = views[:2]
+
+                # --- BFloat16 Mixed Precision for Ada Lovelace ---
+                with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16,enabled=(self.device.type == 'cuda')):
+                    # Teacher process (Global views only)
+                    with torch.no_grad():
+                        teacher_out = [dino_wrapper.forward_teacher(view) for view in global_views]
+
+                    # Student process (All views)
+                    student_out = [dino_wrapper(view) for view in views]
+
+                    # Loss calculation
+                    loss = criterion(student_out, teacher_out) / accumulation_steps
+
+                # Backward pass
+                loss.backward()
+                total_loss += loss.item() * accumulation_steps
+
+                # Gradient Accumulation & EMA Update
+                if ((step + 1) % accumulation_steps == 0) or ((step + 1) == len(data_loader)):
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+                    # EMA Update for Teacher
+                    # Momentum usually scales from 0.996 to 1.0 during training
+                    update_momentum(
+                        dino_wrapper.student_backbone, dino_wrapper.teacher_backbone, m=0.996
+                    )
+                    update_momentum(
+                        dino_wrapper.student_head, dino_wrapper.teacher_head, m=0.996
+                    )
+
+                progress_bar.set_postfix({'loss': f"{loss.item() * accumulation_steps:.4f}"})
+
+            avg_loss = total_loss / len(data_loader)
+            print(f"Epoch {epoch + 1} completed. Average Loss: {avg_loss:.4f}")
+
+        # 5. Save the LoRA weights cleanly
+        print(f"Saving Extended Foundation Model to {save_path}...")
+        # Save only the state dict of the base foundation model (which includes peft LoRA)
+        torch.save(foundation_model.state_dict(), save_path)
 
     def pretrain_student(
             self,
@@ -28,7 +157,8 @@ class TrainingManager:
             use_embeddings=False,
             epochs=50,
             batch_size=64,
-            lr=1e-3,
+            #let's try to decrease learning rate to 1e-4
+            lr=1e-4,
             patience=5,
             projector=None,
             lambda_distill=1.0

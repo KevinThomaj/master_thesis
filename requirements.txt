@@ -6,13 +6,17 @@ torchvision
 timm
 scikit-learn
 
+# Self-Supervised Learning & Fine-Tuning
+lightly
+peft
+
 # Data Manipulation & I/O
 numpy
 pandas
 pyarrow
 Pillow
 
-# FMoW Dataset
+# WILDS-FMoW Dataset
 wilds
 
 # Math & Clustering
