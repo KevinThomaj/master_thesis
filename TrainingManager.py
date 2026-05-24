@@ -2,6 +2,7 @@ import copy
 from lightly.data import DINOCollateFunction
 from lightly.loss import DINOLoss
 from lightly.models.utils import update_momentum
+from lightly.utils.scheduler import cosine_schedule
 from torch.cuda.amp import GradScaler, autocast
 import os
 
@@ -100,6 +101,7 @@ class TrainingManager:
 
             progress_bar = tqdm(data_loader, desc=f"Epoch {epoch + 1}/{epochs} [DINO SSL]")
             optimizer.zero_grad()
+            momentum_val = cosine_schedule(epoch, epochs, 0.996, 1.0)
 
             for step, batch in enumerate(progress_bar):
                 # Lightly collate_fn returns: (list_of_views, labels, filenames)
@@ -117,10 +119,11 @@ class TrainingManager:
                     student_out = [dino_wrapper(view) for view in views]
 
                     # Loss calculation
-                    loss = criterion(student_out, teacher_out) / accumulation_steps
+                    loss = criterion(teacher_out, student_out, epoch=epoch) / accumulation_steps
 
                 # Backward pass
                 loss.backward()
+                dino_wrapper.student_head.cancel_last_layer_gradients(current_epoch=epoch)
                 total_loss += loss.item() * accumulation_steps
 
                 # Gradient Accumulation & EMA Update
@@ -131,10 +134,10 @@ class TrainingManager:
                     # EMA Update for Teacher
                     # Momentum usually scales from 0.996 to 1.0 during training
                     update_momentum(
-                        dino_wrapper.student_backbone, dino_wrapper.teacher_backbone, m=0.996
+                        dino_wrapper.student_backbone, dino_wrapper.teacher_backbone, m=momentum_val
                     )
                     update_momentum(
-                        dino_wrapper.student_head, dino_wrapper.teacher_head, m=0.996
+                        dino_wrapper.student_head, dino_wrapper.teacher_head, m=momentum_val
                     )
 
                 progress_bar.set_postfix({'loss': f"{loss.item() * accumulation_steps:.4f}"})

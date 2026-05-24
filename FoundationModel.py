@@ -59,7 +59,8 @@ class DINOPretrainWrapper(nn.Module):
             output_dim=65536,  # Standard DINO out_dim
             hidden_dim=2048,
             bottleneck_dim=256,
-            batch_norm=False  # DINO natively avoids BN in the head
+            batch_norm=False,  # DINO natively avoids BN in the head
+            freeze_last_layer=1
         )
 
         # Recreate the exact same base model architecture

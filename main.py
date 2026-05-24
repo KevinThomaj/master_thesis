@@ -23,11 +23,11 @@ def main():
                         help='Number of training epochs per incoming batch.')
 
     # Learning Rates
-    parser.add_argument('--lr_ft', type=float, default=1e-3,
+    parser.add_argument('--lr_ft', type=float, default=1e-4,
                         help='Learning rate for the standard online fine-tuning experiment.')
-    parser.add_argument('--lr_dist_student', type=float, default=1e-3,
+    parser.add_argument('--lr_dist_student', type=float, default=1e-4,
                         help='Learning rate for the student model during distillation.')
-    parser.add_argument('--lr_dist_proj', type=float, default=1e-2,
+    parser.add_argument('--lr_dist_proj', type=float, default=1e-3,
                         help='Learning rate for the distillator projector.')
 
     # Loss Weights
@@ -57,7 +57,6 @@ def main():
 
     print("\n--- STEP 2: Divide into preDF (2002-2013) and postDF (2016-2017) ---")
     preDF, postDF = manager.divide(total_df)
-    '''
     fm_model = FoundationModel(use_lora=True).to(device)
     fm_weights_path = "./pretrained_dinov2_lora.pth"
     print("\n--- STEP 3: Extended Pretraining unsupervised Foundation Model on all data from 2002-2013 ---")
@@ -78,9 +77,8 @@ def main():
             accumulation_steps=4
         )
         fm_model.eval()
-    '''
-    fm_model = FoundationModel(use_lora=False).to(device)
-    fm_model.eval()
+    #fm_model = FoundationModel(use_lora=False).to(device)
+    #fm_model.eval()
 
     # Find the 25 most popular classes in preDF
     top_25_classes = preDF['category'].value_counts().nlargest(25).index.tolist()
