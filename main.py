@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as T
-
+import argparse
 from FmowManager import FmowManager
 from TrainingManager import TrainingManager
 from FoundationModel import FoundationModel
@@ -13,6 +13,31 @@ from Student import Student
 
 
 def main():
+    # --- CLI ARGUMENTS SETUP ---
+    parser = argparse.ArgumentParser(description="Fmow Streaming Experiments Pipeline")
+
+    # Streaming Hyperparameters
+    parser.add_argument('--stream_batch_size', type=int, default=10,
+                        help='Batch size for the online streaming phase.')
+    parser.add_argument('--stream_epochs', type=int, default=1,
+                        help='Number of training epochs per incoming batch.')
+
+    # Learning Rates
+    parser.add_argument('--lr_ft', type=float, default=1e-3,
+                        help='Learning rate for the standard online fine-tuning experiment.')
+    parser.add_argument('--lr_dist_student', type=float, default=1e-3,
+                        help='Learning rate for the student model during distillation.')
+    parser.add_argument('--lr_dist_proj', type=float, default=1e-2,
+                        help='Learning rate for the distillator projector.')
+
+    # Loss Weights
+    parser.add_argument('--distill_weight', type=float, default=1.0,
+                        help='Weight lambda for the distillation loss component.')
+
+    args = parser.parse_args()
+
+
+
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     # --- DEVICE CHECK ---
@@ -32,7 +57,7 @@ def main():
 
     print("\n--- STEP 2: Divide into preDF (2002-2013) and postDF (2016-2017) ---")
     preDF, postDF = manager.divide(total_df)
-
+    '''
     fm_model = FoundationModel(use_lora=True).to(device)
     fm_weights_path = "./pretrained_dinov2_lora.pth"
     print("\n--- STEP 3: Extended Pretraining unsupervised Foundation Model on all data from 2002-2013 ---")
@@ -53,8 +78,9 @@ def main():
             accumulation_steps=4
         )
         fm_model.eval()
-    #fm_model = FoundationModel(use_lora=False).to(device)
-    #fm_model.eval()
+    '''
+    fm_model = FoundationModel(use_lora=False).to(device)
+    fm_model.eval()
 
     # Find the 25 most popular classes in preDF
     top_25_classes = preDF['category'].value_counts().nlargest(25).index.tolist()
@@ -176,8 +202,8 @@ def main():
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=True,
-        num_epochs_per_batch=1,
-        batch_size=10 # try with 10 as batch_size
+        num_epochs_per_batch=args.stream_epochs,
+        batch_size=args.stream_batch_size # try with 10 as batch_size
     )
 
     print("\n=======================================================")
@@ -186,7 +212,7 @@ def main():
     student_ft = Student(numberOfClasses=num_classes, pretrained=False).to(device)
     student_ft.load_state_dict(torch.load(weights_path, map_location=device))
 
-    optimizer_ft = optim.Adam(student_ft.parameters(), lr=1e-3)
+    optimizer_ft = optim.Adam(student_ft.parameters(), lr=args.lr_ft)
 
     acc_ft, hist_ft = training_manager.train_online(
         model=student_ft,
@@ -198,8 +224,8 @@ def main():
         class_to_idx=class_to_idx,
         inference_only=False,
         distillator=None,
-        num_epochs_per_batch=1,
-        batch_size=10 # try with 10 as batch_size
+        num_epochs_per_batch=args.stream_epochs,
+        batch_size=args.stream_batch_size # try with 10 as batch_size
     )
 
 
@@ -212,8 +238,8 @@ def main():
     distillator = LinearDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
 
     optimizer_dist = optim.Adam([
-        {'params': student_dist.parameters(), 'lr': 1e-3},
-        {'params': distillator.parameters(), 'lr': 1e-2}
+        {'params': student_dist.parameters(), 'lr': args.lr_dist_student},
+        {'params': distillator.parameters(), 'lr': args.lr_dist_proj}
     ])
 
     acc_dist, hist_dist = training_manager.train_online(
@@ -226,9 +252,9 @@ def main():
         class_to_idx=class_to_idx,
         inference_only=False,
         distillator=distillator,
-        distill_weight=1.0,
-        num_epochs_per_batch=1,
-        batch_size=10 # try with 10 as batch_size
+        distill_weight=args.distill_weight,
+        num_epochs_per_batch=args.stream_epochs,
+        batch_size=args.stream_batch_size # try with 10 as batch_size
     )
 
     print("\n--- STEP 8: Exporting Results for Local Plotting ---")
