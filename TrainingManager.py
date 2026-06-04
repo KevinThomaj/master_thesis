@@ -1,18 +1,21 @@
 import copy
+import numpy as np
 from lightly.data import DINOCollateFunction
 from lightly.loss import DINOLoss
 from lightly.models.utils import update_momentum
 from lightly.utils.scheduler import cosine_schedule
 from torch.cuda.amp import GradScaler, autocast
 import os
+import collections
 
 import numpy as np
 import torch
 from sklearn.model_selection import train_test_split
 import torch.optim as optim
 from torch import nn
-from torch.utils.data import DataLoader
-from tqdm import tqdm
+from torch.utils.data import DataLoader,TensorDataset
+from tqdm import tqdm  
+
 
 from FmowTorchDataset import FmowTorchDataset
 
@@ -36,6 +39,9 @@ class TrainingManager:
 
         from FoundationModel import DINOPretrainWrapper
         dino_wrapper = DINOPretrainWrapper(foundation_model).to(self.device)
+        # --- INIEZIONE PER ARCHITETTURA ADA ---
+        #print("Compilazione del modello per ottimizzazione Tensor Cores (richiederà qualche minuto iniziale)...")
+        #dino_wrapper = torch.compile(dino_wrapper)
 
         # 1. Multi-Crop Augmentation Pipeline (Lightly)
         # Yields 2 global crops (224x224) and 6 local crops (98x98)
@@ -372,7 +378,9 @@ class TrainingManager:
                      distillator=None,
                      distill_weight=1.0,
                      ema=None,
-                     inference_only=False):
+                     inference_only=False,
+                     test_dict=None,
+                     window_size=200):
         """
         Ottimizzato con DataLoader (I/O asincrono), inferenza batched su GPU,
         e calcolo dell'accuratezza globale.
@@ -397,13 +405,69 @@ class TrainingManager:
             pin_memory=True
         )
 
+        test_loaders = {}
+        if test_dict is not None:
+            for concept, t_df in test_dict.items():
+                t_dataset = FmowTorchDataset(
+                    df=t_df,
+                    manager=manager,
+                    class_to_idx=class_to_idx,
+                    transform=transform_fn,
+                    use_embeddings=use_emb
+                )
+                test_loaders[concept] = DataLoader(t_dataset, batch_size=batch_size, shuffle=False)
+
         model = model.to(self.device)
 
         history = {
             'total_samples_seen': [],
             'cumulative_accuracy': [],
-            'drift_points': []
+            'drift_points': [],
+            'rolling_accuracy': []
         }
+        
+        rolling_window = collections.deque(maxlen=window_size)
+        cl_matrix = []
+        
+        def evaluate_test_sets(current_concept):
+            print(f"\n--- Evaluating CL Matrix for concept: {current_concept} ---")
+            if ema is not None:
+                eval_model = ema
+            else:
+                eval_model = model
+                eval_model.eval()
+                
+            evaluations = {}
+            with torch.no_grad():
+                for test_concept, t_loader in test_loaders.items():
+                    concept_correct = 0
+                    concept_total = 0
+                    for test_batch in t_loader:
+                        if use_emb:
+                            t_imgs, _, t_labels = test_batch
+                        else:
+                            t_imgs, t_labels = test_batch
+                            
+                        t_imgs = t_imgs.to(self.device)
+                        t_labels = t_labels.to(self.device)
+                        
+                        if ema is not None:
+                            t_logits = eval_model.predict(t_imgs)
+                        else:
+                            t_outputs = eval_model(t_imgs)
+                            t_logits = t_outputs['logits']
+                            
+                        t_preds = torch.argmax(t_logits, dim=1)
+                        concept_correct += torch.sum(t_preds == t_labels).item()
+                        concept_total += t_labels.size(0)
+                        
+                    eval_acc = (concept_correct / concept_total) * 100 if concept_total > 0 else 0
+                    evaluations[test_concept] = eval_acc
+                    
+            return {
+                'train_concept': current_concept,
+                'evaluations': evaluations
+            }
 
         # Counters
         global_correct = 0
@@ -452,6 +516,10 @@ class TrainingManager:
                 elif row_concept != current_concept:
                     print(f"\n--- DRIFT DETECTED: Transition da Concept {current_concept} a Concept {row_concept} ---")
                     history['drift_points'].append(total_samples_seen)
+                    
+                    if test_loaders:
+                        cl_matrix.append(evaluate_test_sets(current_concept))
+                        
                     concept_correct = 0
                     concept_number_images = 0
                     current_concept = row_concept
@@ -460,6 +528,9 @@ class TrainingManager:
                 if is_correct:
                     concept_correct += 1
                     global_correct += 1
+                    
+                rolling_window.append(is_correct)
+                rolling_acc = (sum(rolling_window) / len(rolling_window)) * 100
 
                 concept_number_images += 1
                 global_total += 1
@@ -468,6 +539,7 @@ class TrainingManager:
                 acc_corrente = (concept_correct / concept_number_images) * 100
                 history['total_samples_seen'].append(total_samples_seen)
                 history['cumulative_accuracy'].append(acc_corrente)
+                history['rolling_accuracy'].append(rolling_acc)
 
             # --- 5. BIVIO INFERENZA VS TRAINING ---
             if inference_only:
@@ -498,6 +570,9 @@ class TrainingManager:
             if ema is not None:
                 ema.update(model)
 
+        if test_loaders and current_concept is not None:
+            cl_matrix.append(evaluate_test_sets(current_concept))
+
         # --- 7. FINAL METRICS ---
         final_acc = (concept_correct / concept_number_images) * 100 if concept_number_images > 0 else 0
         global_acc = (global_correct / global_total) * 100 if global_total > 0 else 0
@@ -505,4 +580,60 @@ class TrainingManager:
         print(f"\n--- Fine Stream | Accuratezza Finale Concept {current_concept}: {final_acc:.2f}% ---")
         print(f"--- Accuratezza Globale (Tutti i Concept): {global_acc:.2f}% ---")
 
-        return final_acc, history
+        return final_acc, history, cl_matrix
+
+    def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=50, lr=1e-3):
+
+
+        print("\n--- Starting Offline Linear Probing ---")
+        
+        train_df, test_df = train_test_split(
+            df_embeddings, test_size=0.2, stratify=df_embeddings['category'], random_state=42
+        )
+        
+        # Prepare Tensors
+        X_train = torch.tensor(np.stack(train_df['embedding'].values), dtype=torch.float32)
+        y_train = torch.tensor(train_df['category'].map(class_to_idx).values, dtype=torch.long)
+        
+        X_test = torch.tensor(np.stack(test_df['embedding'].values), dtype=torch.float32)
+        y_test = torch.tensor(test_df['category'].map(class_to_idx).values, dtype=torch.long)
+        
+        train_dataset = TensorDataset(X_train, y_train)
+        test_dataset = TensorDataset(X_test, y_test)
+        
+        train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
+        
+        embed_dim = X_train.shape[1]
+        
+        classifier = nn.Linear(embed_dim, num_classes).to(self.device)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(classifier.parameters(), lr=lr)
+        
+        best_acc = 0.0
+        
+        for epoch in range(epochs):
+            classifier.train()
+            for batch_x, batch_y in train_loader:
+                batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                optimizer.zero_grad()
+                outputs = classifier(batch_x)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+            
+            classifier.eval()
+            correct = 0
+            with torch.no_grad():
+                for batch_x, batch_y in test_loader:
+                    batch_x, batch_y = batch_x.to(self.device), batch_y.to(self.device)
+                    outputs = classifier(batch_x)
+                    preds = torch.argmax(outputs, dim=1)
+                    correct += (preds == batch_y).sum().item()
+            
+            test_acc = correct / len(test_dataset)
+            if test_acc > best_acc:
+                best_acc = test_acc
+                
+        print(f"Linear Probing Completed. Best Test Accuracy: {best_acc * 100:.2f}%")
+        return best_acc

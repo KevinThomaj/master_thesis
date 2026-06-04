@@ -5,14 +5,17 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as T
 import argparse
+import pandas as pd
+
 from FmowManager import FmowManager
 from TrainingManager import TrainingManager
 from FoundationModel import FoundationModel
 from FeatureDistillation import LinearDistiller
 from Student import Student
+from sklearn.model_selection import train_test_split
 
 
-def main():
+def parse_arguments():
     # --- CLI ARGUMENTS SETUP ---
     parser = argparse.ArgumentParser(description="Fmow Streaming Experiments Pipeline")
 
@@ -34,10 +37,10 @@ def main():
     parser.add_argument('--distill_weight', type=float, default=1.0,
                         help='Weight lambda for the distillation loss component.')
 
-    args = parser.parse_args()
+    return parser.parse_args()
 
 
-
+def setup_device():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     # --- DEVICE CHECK ---
@@ -47,38 +50,15 @@ def main():
     if device.type == 'cuda':
         print(f" GPU Name: {torch.cuda.get_device_name(0)}")
     print(f"{'=' * 55}\n")
+    return device
 
-    # Pass the device to the managers
-    manager = FmowManager(device=device)
-    training_manager = TrainingManager(device=device)
 
+def prepare_and_sample_data(manager):
     print("\n--- STEP 1: Total Dataset ---")
     total_df = manager.get_dataset()
 
     print("\n--- STEP 2: Divide into preDF (2002-2013) and postDF (2016-2017) ---")
     preDF, postDF = manager.divide(total_df)
-    fm_model = FoundationModel(use_lora=True).to(device)
-    fm_weights_path = "./pretrained_dinov2_lora.pth"
-    print("\n--- STEP 3: Extended Pretraining unsupervised Foundation Model on all data from 2002-2013 ---")
-
-    if os.path.exists(fm_weights_path):
-        print(f"Found existing Foundation Model weights at {fm_weights_path}. Loading...")
-        fm_model.load_state_dict(torch.load(fm_weights_path, map_location=device))
-        fm_model.eval()  # Important: set back to eval mode for feature extraction
-    else:
-        print("No weights found. Commencing DINO Extended Pre-training...")
-        training_manager.pretrain_teacher(
-            foundation_model=fm_model,
-            df=preDF,  # Use all 140k images, not just top 25!
-            manager=manager,
-            save_path=fm_weights_path,
-            epochs=25,
-            batch_size=64,  # Depends on your VRAM, adjust if OOM
-            accumulation_steps=4
-        )
-        fm_model.eval()
-    #fm_model = FoundationModel(use_lora=False).to(device)
-    #fm_model.eval()
 
     # Find the 25 most popular classes in preDF
     top_25_classes = preDF['category'].value_counts().nlargest(25).index.tolist()
@@ -109,15 +89,34 @@ def main():
         random_state=42
     )
 
-    # Setup Transforms (ImageNet standard for ResNet18 and DINOv2)
-    transform_imagenet = T.Compose([
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+    return preDF_sampled, postDF_sampled, top_25_classes, class_to_idx, preDF
 
-    criterion = nn.CrossEntropyLoss()
-    num_classes = 25
 
+def run_fm_pretraining(device, preDF, manager, training_manager):
+    fm_model = FoundationModel(use_lora=True).to(device)
+    fm_weights_path = "./pretrained_dinov2_lora.pth"
+    print("\n--- STEP 3: Extended Pretraining unsupervised Foundation Model on all data from 2002-2013 ---")
+
+    if os.path.exists(fm_weights_path):
+        print(f"Found existing Foundation Model weights at {fm_weights_path}. Loading...")
+        fm_model.load_state_dict(torch.load(fm_weights_path, map_location=device))
+        fm_model.eval()  # Important: set back to eval mode for feature extraction
+    else:
+        print("No weights found. Commencing DINO Extended Pre-training...")
+        training_manager.pretrain_teacher(
+            foundation_model=fm_model,
+            df=preDF,  # Use all 140k images, not just top 25!
+            manager=manager,
+            save_path=fm_weights_path,
+            epochs=25,
+            batch_size=64,  # Depends on your VRAM, adjust if OOM
+            accumulation_steps=4
+        )
+        fm_model.eval()
+    return fm_model
+
+
+def run_student_pretraining(device, preDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, num_classes):
     print("\n--- STEP 6: Offline Pretraining on preDF (2002-2013) ---")
 
     # ---------------------------------------------------------
@@ -155,9 +154,28 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    print("\n--- STEP 7: Extracting Foundation Model Embeddings for PostDF ---")
-    # We need the embeddings explicitly calculated before the stream
-    postDF_sampled = manager.get_embeddings(
+    return weights_path
+
+
+def prepare_streaming_data(device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, transform_imagenet, num_classes, top_25_classes):
+    print("\n--- STEP 7a: Extracting Embeddings for Raw Foundation Model ---")
+    fm_model_raw = FoundationModel(use_lora=False).to(device)
+    fm_model_raw.eval()
+    
+    postDF_raw_embed = manager.get_embeddings(
+        df_sample=postDF_sampled,
+        model=fm_model_raw,
+        transform_fn=transform_imagenet,
+        batch_size=128,
+        save_path="./dino_noExt"
+    )
+    
+    del fm_model_raw
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    print("\n--- STEP 7b: Extracting Embeddings for Extended Foundation Model ---")
+    postDF_ext_embed = manager.get_embeddings(
         df_sample=postDF_sampled,
         model=fm_model,
         transform_fn=transform_imagenet,
@@ -165,25 +183,58 @@ def main():
         save_path="./dino"
     )
     
-    # Free up memory before streaming
     del fm_model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-
-    # Shuffle the dataset
-    postDF_sampled = postDF_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
+    print("\n--- STEP 7c: Offline Linear Probing Comparison ---")
+    print("Evaluating Raw Foundation Model features...")
+    acc_raw = training_manager.train_linear_probe(postDF_raw_embed, class_to_idx, num_classes)
+    
+    print("Evaluating Extended Foundation Model features...")
+    acc_ext = training_manager.train_linear_probe(postDF_ext_embed, class_to_idx, num_classes)
+    
+    print("\n=======================================================")
+    print(" LINEAR PROBING RESULTS (Offline on Streaming Data)")
+    print("=======================================================")
+    print(f" Raw FM Accuracy:      {acc_raw * 100:.2f}%")
+    print(f" Extended FM Accuracy: {acc_ext * 100:.2f}%")
+    print("=======================================================\n")
+    
+    # Shuffle and prepare the extended embeddings for the streaming experiments
+    postDF_sampled_final = postDF_ext_embed.sample(frac=1, random_state=42).reset_index(drop=True)
 
     # Mocking a class_to_concept mapping
     dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(top_25_classes)}
-    postDF_sampled = manager.create_concepts(postDF_sampled, dummy_concept_mapping)
+    postDF_sampled_final = manager.create_concepts(postDF_sampled_final, dummy_concept_mapping)
 
     # Order by the newly created concepts
-    postDF_sampled = postDF_sampled.sort_values(by='concept').reset_index(drop=True)
+    postDF_sampled_final = postDF_sampled_final.sort_values(by='concept').reset_index(drop=True)
+
+    # Split into stream_df and test_dict
+    stream_parts = []
+    test_dict = {}
+    
+    # Group by concept and split
+    for concept, group in postDF_sampled_final.groupby('concept', sort=False):
+        test_size = 100
+
+        stream_part, test_part = train_test_split(group, test_size=test_size, random_state=42)
+            
+        stream_parts.append(stream_part)
+        if len(test_part) > 0:
+            test_dict[concept] = test_part
+            
+    # Re-concatenate the stream parts
+    stream_df = pd.concat(stream_parts).reset_index(drop=True)
+
+    return stream_df, test_dict
 
 
-
+def run_streaming_experiments(device, postDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, args, num_classes, weights_path, test_dict):
     print("\n--- STEP 8: STREAMING EXPERIMENTS (2016-2017) ---")
+
+    criterion = nn.CrossEntropyLoss()
 
     print("\n=======================================================")
     print(" EXPERIMENT 1: PURE INFERENCE (Pretrained Student)")
@@ -191,17 +242,18 @@ def main():
     # Initialize without ImageNet weights, then load our custom preDF weights
     student_inf = Student(numberOfClasses=num_classes, pretrained=False).to(device)
     student_inf.load_state_dict(torch.load(weights_path, map_location=device))
-    acc_inf, hist_inf = training_manager.train_online(
+    acc_inf, hist_inf, cl_inf = training_manager.train_online(
         model=student_inf,
         df=postDF_sampled,
         criterion=criterion,
         optimizer=None,
-        manager = manager,
+        manager=manager,
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=True,
         num_epochs_per_batch=args.stream_epochs,
-        batch_size=args.stream_batch_size # try with 10 as batch_size
+        batch_size=args.stream_batch_size, # try with 10 as batch_size
+        test_dict=test_dict
     )
 
     print("\n=======================================================")
@@ -212,26 +264,26 @@ def main():
 
     optimizer_ft = optim.Adam(student_ft.parameters(), lr=args.lr_ft)
 
-    acc_ft, hist_ft = training_manager.train_online(
+    acc_ft, hist_ft, cl_ft = training_manager.train_online(
         model=student_ft,
         df=postDF_sampled,
         criterion=criterion,
         optimizer=optimizer_ft,
-        manager = manager,
+        manager=manager,
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=False,
         distillator=None,
         num_epochs_per_batch=args.stream_epochs,
-        batch_size=args.stream_batch_size # try with 10 as batch_size
+        batch_size=args.stream_batch_size, # try with 10 as batch_size
+        test_dict=test_dict
     )
-
 
     print("\n=======================================================")
     print(" EXPERIMENT 3: ONLINE FINE-TUNING + DISTILLATION (Pretrained Student)")
     print("=======================================================")
     student_dist = Student(numberOfClasses=num_classes, pretrained=False).to(device)
-    student_dist.load_state_dict(torch.load(weights_path,map_location=device))
+    student_dist.load_state_dict(torch.load(weights_path, map_location=device))
 
     distillator = LinearDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
 
@@ -240,34 +292,42 @@ def main():
         {'params': distillator.parameters(), 'lr': args.lr_dist_proj}
     ])
 
-    acc_dist, hist_dist = training_manager.train_online(
+    acc_dist, hist_dist, cl_dist = training_manager.train_online(
         model=student_dist,
         df=postDF_sampled,
         criterion=criterion,
         optimizer=optimizer_dist,
-        manager = manager,
+        manager=manager,
         transform_fn=transform_imagenet,
         class_to_idx=class_to_idx,
         inference_only=False,
         distillator=distillator,
         distill_weight=args.distill_weight,
         num_epochs_per_batch=args.stream_epochs,
-        batch_size=args.stream_batch_size # try with 10 as batch_size
+        batch_size=args.stream_batch_size, # try with 10 as batch_size
+        test_dict=test_dict
     )
+    
+    return acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist
 
+
+def save_experiment_results(acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist):
     print("\n--- STEP 8: Exporting Results for Local Plotting ---")
     results_payload = {
         "inference": {
             "final_accuracy": acc_inf,
-            "history": hist_inf
+            "history": hist_inf,
+            "cl_matrix": cl_inf
         },
         "fine_tuning": {
             "final_accuracy": acc_ft,
-            "history": hist_ft
+            "history": hist_ft,
+            "cl_matrix": cl_ft
         },
         "distillation": {
             "final_accuracy": acc_dist,
-            "history": hist_dist
+            "history": hist_dist,
+            "cl_matrix": cl_dist
         }
     }
 
@@ -277,6 +337,40 @@ def main():
 
     print(f"Data successfully saved to {output_file}.")
     print("Download this file to your local machine to generate the matplotlib charts without server X11 errors.")
+
+
+def main():
+    args = parse_arguments()
+    device = setup_device()
+
+    manager = FmowManager(device=device)
+    training_manager = TrainingManager(device=device)
+
+    preDF_sampled, postDF_sampled, top_25_classes, class_to_idx, preDF = prepare_and_sample_data(manager)
+
+    fm_model = run_fm_pretraining(device, preDF, manager, training_manager)
+
+    # Setup Transforms (ImageNet standard for ResNet18 and DINOv2)
+    transform_imagenet = T.Compose([
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    num_classes = 25
+
+    weights_path = run_student_pretraining(
+        device, preDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, num_classes
+    )
+
+    postDF_sampled, test_dict = prepare_streaming_data(
+        device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, transform_imagenet, num_classes, top_25_classes
+    )
+
+    acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist = run_streaming_experiments(
+        device, postDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, args, num_classes, weights_path, test_dict
+    )
+
+    save_experiment_results(acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist)
+
 
 if __name__ == "__main__":
     main()
