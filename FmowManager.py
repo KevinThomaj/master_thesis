@@ -195,11 +195,3 @@ class FmowManager:
         return df
 
 
-#1)Total Dataset
-#2)Divide in preDF(2002-2013) and postDF(2016-2017)
-#3)Sample 1100 images per class in preDF (This is the training + Validation data) using 25 most popular classes. Use SampleDataset for this
-#4)Sample 500 images per class using (25 most popular classes chosen in previous step) in postDF, shuffle, create concepts and then order by concepts
-#5)Pretraining of FM using all preDF
-#6)Pretraining of resnet18 using output of 3)
-#7)Online learning of Resnet18 using output of 4)
-#8)Calculate embeddings using Foundation Model(FM) for preDF and output of 4)

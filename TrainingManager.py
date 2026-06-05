@@ -476,6 +476,7 @@ class TrainingManager:
         concept_number_images = 0
         current_concept = None
         total_samples_seen = 0
+        active_classes = None
 
         # Iterate over the DataLoader
         for batch in tqdm(stream_loader, desc=f"Stream (Inference Only: {inference_only})"):
@@ -513,6 +514,9 @@ class TrainingManager:
 
                 if current_concept is None:
                     current_concept = row_concept
+                    #active class in current concept
+                    active_class_list = [class_to_idx[c] for c in df[df['concept'] == current_concept]['category'].unique() if c in class_to_idx]
+                    active_classes = torch.tensor(active_class_list, dtype=torch.long, device=self.device)
                 elif row_concept != current_concept:
                     print(f"\n--- DRIFT DETECTED: Transition da Concept {current_concept} a Concept {row_concept} ---")
                     history['drift_points'].append(total_samples_seen)
@@ -523,6 +527,8 @@ class TrainingManager:
                     concept_correct = 0
                     concept_number_images = 0
                     current_concept = row_concept
+                    active_class_list = [class_to_idx[c] for c in df[df['concept'] == current_concept]['category'].unique() if c in class_to_idx]
+                    active_classes = torch.tensor(active_class_list, dtype=torch.long, device=self.device)
 
                 is_correct = (predicted_classes[i] == batch_labels[i]).item()
                 if is_correct:
@@ -555,6 +561,12 @@ class TrainingManager:
 
                 student_output = model(batch_imgs)
                 logits = student_output['logits']
+
+                # --- LOGIT MASKING --- (to prevent forgetting in classification layer)
+                if active_classes is not None:
+                    mask = torch.ones_like(logits, dtype=torch.bool)
+                    mask[:, active_classes] = False
+                    logits[mask] = -float('inf')
 
                 loss_ce = criterion(logits, batch_labels)
                 total_loss = loss_ce
