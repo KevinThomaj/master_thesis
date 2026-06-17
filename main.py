@@ -252,7 +252,7 @@ def run_streaming_experiments(device, postDF_sampled, manager, training_manager,
         class_to_idx=class_to_idx,
         inference_only=True,
         num_epochs_per_batch=args.stream_epochs,
-        batch_size=args.stream_batch_size, # try with 10 as batch_size
+        batch_size=args.stream_batch_size,
         test_dict=test_dict
     )
 
