@@ -20,15 +20,15 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Fmow Streaming Experiments Pipeline")
 
     # Streaming Hyperparameters
-    parser.add_argument('--stream_batch_size', type=int, default=10,
+    parser.add_argument('--stream_batch_size', type=int, default=50,
                         help='Batch size for the online streaming phase.')
     parser.add_argument('--stream_epochs', type=int, default=1,
                         help='Number of training epochs per incoming batch.')
 
     # Learning Rates
-    parser.add_argument('--lr_ft', type=float, default=1e-4,
+    parser.add_argument('--lr_ft', type=float, default=1e-2,
                         help='Learning rate for the standard online fine-tuning experiment.')
-    parser.add_argument('--lr_dist_student', type=float, default=1e-4,
+    parser.add_argument('--lr_dist_student', type=float, default=1e-2,
                         help='Learning rate for the student model during distillation.')
     parser.add_argument('--lr_dist_proj', type=float, default=1e-3,
                         help='Learning rate for the distillator projector.')
@@ -36,6 +36,10 @@ def parse_arguments():
     # Loss Weights
     parser.add_argument('--distill_weight', type=float, default=1.0,
                         help='Weight lambda for the distillation loss component.')
+                        
+    # Experiments
+    parser.add_argument('--experiments', nargs='+', type=int, default=[1, 2, 3, 4, 5, 6, 7],
+                        help='List of experiments to run (1-7). Default is all.')
 
     return parser.parse_args()
 
@@ -116,45 +120,86 @@ def run_fm_pretraining(device, preDF, manager, training_manager):
     return fm_model
 
 
-def run_student_pretraining(device, preDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, num_classes):
+def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_manager, class_to_idx, transform_imagenet, num_classes, args):
     print("\n--- STEP 6: Offline Pretraining on preDF (2002-2013) ---")
 
-    # ---------------------------------------------------------
-    # PATH TO YOUR PRETRAINED WEIGHTS
-    # If this file exists, the script will skip pretraining.
-    # ---------------------------------------------------------
-    weights_path = "./pretrained_student_weights.pth"
+    experiments = args.experiments
+    needs_student_only = any(exp in experiments for exp in [1, 3, 4])
+    needs_student_proj = any(exp in experiments for exp in [2, 5, 6, 7])
 
-    if os.path.exists(weights_path):
-        print(f"Found existing pretrained weights at {weights_path}. Skipping pretraining.")
-    else:
-        print("Starting offline pretraining loop...")
-        # Initialize with ImageNet weights before fine-tuning on preDF
-        student_base = Student(numberOfClasses=num_classes, pretrained=True).to(device)
+    weights_paths = {}
 
-        # Adjust epochs, batch_size, and patience as needed for your server
-        student_pretrained, _ = training_manager.pretrain_student(
-            student=student_base,
-            df=preDF_sampled,
-            manager=manager,
-            class_to_idx=class_to_idx,
-            transform_fn=transform_imagenet,
-            use_embeddings=False,
-            epochs=50,
-            batch_size=64,
-            lr=1e-4,
-            patience=5
-        )
+    if needs_student_only:
+        weights_path_student = "./pretrained_student_weights.pth"
+        weights_paths['student_only'] = weights_path_student
+        if os.path.exists(weights_path_student):
+            print(f"Found existing pretrained weights at {weights_path_student}. Skipping Student-only pretraining.")
+        else:
+            print("Starting offline pretraining loop for Student only...")
+            student_base = Student(numberOfClasses=num_classes, pretrained=True).to(device)
+            student_pretrained, _ = training_manager.pretrain_student(
+                student=student_base,
+                df=preDF_sampled,
+                manager=manager,
+                class_to_idx=class_to_idx,
+                transform_fn=transform_imagenet,
+                use_embeddings=False,
+                epochs=50,
+                batch_size=64,
+                lr=1e-4,
+                patience=5
+            )
+            print(f"Saving offline pretraining weights to {weights_path_student}...")
+            torch.save(student_pretrained.state_dict(), weights_path_student)
+            del student_base, student_pretrained
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-        print(f"Saving offline pretraining weights to {weights_path}...")
-        torch.save(student_pretrained.state_dict(), weights_path)
+    if needs_student_proj:
+        weights_path_student_proj = "./pretrained_student_proj_weights.pth"
+        weights_path_proj = "./pretrained_projector_weights.pth"
+        weights_paths['student_proj'] = weights_path_student_proj
+        weights_paths['projector'] = weights_path_proj
 
-        # Free memory
-        del student_base, student_pretrained
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if os.path.exists(weights_path_student_proj) and os.path.exists(weights_path_proj):
+            print(f"Found existing pretrained weights at {weights_path_student_proj}. Skipping Student+Projector pretraining.")
+        else:
+            print("\n--- Extracting Embeddings for Pre-training with Projector ---")
+            fm_model.eval()
+            preDF_embed = manager.get_embeddings(
+                df_sample=preDF_sampled,
+                model=fm_model,
+                transform_fn=transform_imagenet,
+                batch_size=128,
+                save_path="./dino_preDF"
+            )
 
-    return weights_path
+            print("Starting offline pretraining loop for Student + Projector...")
+            student_base = Student(numberOfClasses=num_classes, pretrained=True).to(device)
+            distillator = LinearDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
+
+            student_pretrained, proj_pretrained = training_manager.pretrain_student(
+                student=student_base,
+                df=preDF_embed,
+                manager=manager,
+                class_to_idx=class_to_idx,
+                transform_fn=transform_imagenet,
+                use_embeddings=True,
+                epochs=50,
+                batch_size=64,
+                lr=1e-4,
+                patience=5,
+                projector=distillator,
+                lambda_distill=args.distill_weight
+            )
+            print(f"Saving offline pretraining weights to {weights_path_student_proj} and {weights_path_proj}...")
+            torch.save(student_pretrained.state_dict(), weights_path_student_proj)
+            torch.save(proj_pretrained.state_dict(), weights_path_proj)
+            del student_base, student_pretrained, distillator, proj_pretrained
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    return weights_paths
 
 
 def prepare_streaming_data(device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, transform_imagenet, num_classes, top_25_classes):
@@ -217,9 +262,16 @@ def prepare_streaming_data(device, postDF_sampled, fm_model, manager, training_m
     
     # Group by concept and split
     for concept, group in postDF_sampled_final.groupby('concept', sort=False):
+        # Taking 20 images per class = 100 images per concept
         test_size = 100
-
-        stream_part, test_part = train_test_split(group, test_size=test_size, random_state=42)
+        
+        #balanced across classes inside the concept
+        stream_part, test_part = train_test_split(
+            group, 
+            test_size=test_size, 
+            stratify=group['category'], 
+            random_state=42
+        )
             
         stream_parts.append(stream_part)
         if len(test_part) > 0:
@@ -231,106 +283,136 @@ def prepare_streaming_data(device, postDF_sampled, fm_model, manager, training_m
     return stream_df, test_dict
 
 
-def run_streaming_experiments(device, postDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, args, num_classes, weights_path, test_dict):
+def run_streaming_experiments(device, postDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, args, num_classes, weights_paths, test_dict):
     print("\n--- STEP 8: STREAMING EXPERIMENTS (2016-2017) ---")
 
     criterion = nn.CrossEntropyLoss()
+    experiments = args.experiments
+    results_payload = {}
 
-    print("\n=======================================================")
-    print(" EXPERIMENT 1: PURE INFERENCE (Pretrained Student)")
-    print("=======================================================")
-    # Initialize without ImageNet weights, then load our custom preDF weights
-    student_inf = Student(numberOfClasses=num_classes, pretrained=False).to(device)
-    student_inf.load_state_dict(torch.load(weights_path, map_location=device))
-    acc_inf, hist_inf, cl_inf = training_manager.train_online(
-        model=student_inf,
-        df=postDF_sampled,
-        criterion=criterion,
-        optimizer=None,
-        manager=manager,
-        transform_fn=transform_imagenet,
-        class_to_idx=class_to_idx,
-        inference_only=True,
-        num_epochs_per_batch=args.stream_epochs,
-        batch_size=args.stream_batch_size,
-        test_dict=test_dict
-    )
+    def get_student(weights_key):
+        s = Student(numberOfClasses=num_classes, pretrained=False).to(device)
+        if weights_key in weights_paths:
+            s.load_state_dict(torch.load(weights_paths[weights_key], map_location=device))
+        return s
 
-    print("\n=======================================================")
-    print(" EXPERIMENT 2: ONLINE FINE-TUNING (Pretrained Student)")
-    print("=======================================================")
-    student_ft = Student(numberOfClasses=num_classes, pretrained=False).to(device)
-    student_ft.load_state_dict(torch.load(weights_path, map_location=device))
+    def get_distillator(weights_key=None):
+        d = LinearDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
+        if weights_key and weights_key in weights_paths:
+            d.load_state_dict(torch.load(weights_paths[weights_key], map_location=device))
+        return d
 
-    optimizer_ft = optim.Adam(student_ft.parameters(), lr=args.lr_ft)
+    if 1 in experiments:
+        print("\n=======================================================")
+        print(" EXPERIMENT 1: Student finetuned on historic + pure inference on stream")
+        print("=======================================================")
+        student = get_student('student_only')
+        acc, hist, cl = training_manager.train_online(
+            model=student, df=postDF_sampled, criterion=criterion, optimizer=None,
+            manager=manager, transform_fn=transform_imagenet, class_to_idx=class_to_idx,
+            inference_only=True, num_epochs_per_batch=args.stream_epochs,
+            batch_size=args.stream_batch_size, test_dict=test_dict
+        )
+        results_payload["exp_1"] = {"final_accuracy": acc, "history": hist, "cl_matrix": cl}
 
-    acc_ft, hist_ft, cl_ft = training_manager.train_online(
-        model=student_ft,
-        df=postDF_sampled,
-        criterion=criterion,
-        optimizer=optimizer_ft,
-        manager=manager,
-        transform_fn=transform_imagenet,
-        class_to_idx=class_to_idx,
-        inference_only=False,
-        distillator=None,
-        num_epochs_per_batch=args.stream_epochs,
-        batch_size=args.stream_batch_size, # try with 10 as batch_size
-        test_dict=test_dict
-    )
+    if 2 in experiments:
+        print("\n=======================================================")
+        print(" EXPERIMENT 2: (Student + Projector) finetuned on historic + pure inference on stream")
+        print("=======================================================")
+        student = get_student('student_proj')
+        acc, hist, cl = training_manager.train_online(
+            model=student, df=postDF_sampled, criterion=criterion, optimizer=None,
+            manager=manager, transform_fn=transform_imagenet, class_to_idx=class_to_idx,
+            inference_only=True, num_epochs_per_batch=args.stream_epochs,
+            batch_size=args.stream_batch_size, test_dict=test_dict
+        )
+        results_payload["exp_2"] = {"final_accuracy": acc, "history": hist, "cl_matrix": cl}
 
-    print("\n=======================================================")
-    print(" EXPERIMENT 3: ONLINE FINE-TUNING + DISTILLATION (Pretrained Student)")
-    print("=======================================================")
-    student_dist = Student(numberOfClasses=num_classes, pretrained=False).to(device)
-    student_dist.load_state_dict(torch.load(weights_path, map_location=device))
+    if 3 in experiments:
+        print("\n=======================================================")
+        print(" EXPERIMENT 3: Student finetuned on historic + student finetuning on stream")
+        print("=======================================================")
+        student = get_student('student_only')
+        optimizer = optim.Adam(student.parameters(), lr=args.lr_ft)
+        acc, hist, cl = training_manager.train_online(
+            model=student, df=postDF_sampled, criterion=criterion, optimizer=optimizer,
+            manager=manager, transform_fn=transform_imagenet, class_to_idx=class_to_idx,
+            inference_only=False, distillator=None,
+            num_epochs_per_batch=args.stream_epochs, batch_size=args.stream_batch_size, test_dict=test_dict
+        )
+        results_payload["exp_3"] = {"final_accuracy": acc, "history": hist, "cl_matrix": cl}
 
-    distillator = LinearDistiller(dimFeatureStudent=512, dimFeatureTeacher=768).to(device)
+    if 4 in experiments:
+        print("\n=======================================================")
+        print(" EXPERIMENT 4: Student finetuned on historic + (student + projector) finetuning on stream")
+        print("=======================================================")
+        student = get_student('student_only')
+        distillator = get_distillator() # Random init
+        optimizer = optim.Adam([
+            {'params': student.parameters(), 'lr': args.lr_dist_student},
+            {'params': distillator.parameters(), 'lr': args.lr_dist_proj}
+        ])
+        acc, hist, cl = training_manager.train_online(
+            model=student, df=postDF_sampled, criterion=criterion, optimizer=optimizer,
+            manager=manager, transform_fn=transform_imagenet, class_to_idx=class_to_idx,
+            inference_only=False, distillator=distillator, distill_weight=args.distill_weight,
+            num_epochs_per_batch=args.stream_epochs, batch_size=args.stream_batch_size, test_dict=test_dict
+        )
+        results_payload["exp_4"] = {"final_accuracy": acc, "history": hist, "cl_matrix": cl}
 
-    optimizer_dist = optim.Adam([
-        {'params': student_dist.parameters(), 'lr': args.lr_dist_student},
-        {'params': distillator.parameters(), 'lr': args.lr_dist_proj}
-    ])
+    if 5 in experiments:
+        print("\n=======================================================")
+        print(" EXPERIMENT 5: (Student + Projector) finetuned on historic + (student + Projector) finetuned on stream")
+        print("=======================================================")
+        student = get_student('student_proj')
+        distillator = get_distillator('projector')
+        optimizer = optim.Adam([
+            {'params': student.parameters(), 'lr': args.lr_dist_student},
+            {'params': distillator.parameters(), 'lr': args.lr_dist_proj}
+        ])
+        acc, hist, cl = training_manager.train_online(
+            model=student, df=postDF_sampled, criterion=criterion, optimizer=optimizer,
+            manager=manager, transform_fn=transform_imagenet, class_to_idx=class_to_idx,
+            inference_only=False, distillator=distillator, distill_weight=args.distill_weight,
+            num_epochs_per_batch=args.stream_epochs, batch_size=args.stream_batch_size, test_dict=test_dict
+        )
+        results_payload["exp_5"] = {"final_accuracy": acc, "history": hist, "cl_matrix": cl}
 
-    acc_dist, hist_dist, cl_dist = training_manager.train_online(
-        model=student_dist,
-        df=postDF_sampled,
-        criterion=criterion,
-        optimizer=optimizer_dist,
-        manager=manager,
-        transform_fn=transform_imagenet,
-        class_to_idx=class_to_idx,
-        inference_only=False,
-        distillator=distillator,
-        distill_weight=args.distill_weight,
-        num_epochs_per_batch=args.stream_epochs,
-        batch_size=args.stream_batch_size, # try with 10 as batch_size
-        test_dict=test_dict
-    )
-    
-    return acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist
+    if 6 in experiments:
+        print("\n=======================================================")
+        print(" EXPERIMENT 6: (Student + Projector) finetuned on historic + (student finetuned on stream + projector frozen on stream)")
+        print("=======================================================")
+        student = get_student('student_proj')
+        distillator = get_distillator('projector')
+        optimizer = optim.Adam(student.parameters(), lr=args.lr_dist_student)
+        acc, hist, cl = training_manager.train_online(
+            model=student, df=postDF_sampled, criterion=criterion, optimizer=optimizer,
+            manager=manager, transform_fn=transform_imagenet, class_to_idx=class_to_idx,
+            inference_only=False, distillator=distillator, distill_weight=args.distill_weight,
+            num_epochs_per_batch=args.stream_epochs, batch_size=args.stream_batch_size, test_dict=test_dict,
+            freeze_distillator=True
+        )
+        results_payload["exp_6"] = {"final_accuracy": acc, "history": hist, "cl_matrix": cl}
+
+    if 7 in experiments:
+        print("\n=======================================================")
+        print(" EXPERIMENT 7: (Student + Projector) finetuned on historic + (student finetuned on stream, no projector)")
+        print("=======================================================")
+        student = get_student('student_proj')
+        optimizer = optim.Adam(student.parameters(), lr=args.lr_ft)
+        acc, hist, cl = training_manager.train_online(
+            model=student, df=postDF_sampled, criterion=criterion, optimizer=optimizer,
+            manager=manager, transform_fn=transform_imagenet, class_to_idx=class_to_idx,
+            inference_only=False, distillator=None,
+            num_epochs_per_batch=args.stream_epochs, batch_size=args.stream_batch_size, test_dict=test_dict
+        )
+        results_payload["exp_7"] = {"final_accuracy": acc, "history": hist, "cl_matrix": cl}
+
+    return results_payload
 
 
-def save_experiment_results(acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist):
+def save_experiment_results(results_payload):
     print("\n--- STEP 8: Exporting Results for Local Plotting ---")
-    results_payload = {
-        "inference": {
-            "final_accuracy": acc_inf,
-            "history": hist_inf,
-            "cl_matrix": cl_inf
-        },
-        "fine_tuning": {
-            "final_accuracy": acc_ft,
-            "history": hist_ft,
-            "cl_matrix": cl_ft
-        },
-        "distillation": {
-            "final_accuracy": acc_dist,
-            "history": hist_dist,
-            "cl_matrix": cl_dist
-        }
-    }
-
     output_file = "experiment_results.json"
     with open(output_file, "w") as f:
         json.dump(results_payload, f, indent=4)
@@ -357,19 +439,19 @@ def main():
     ])
     num_classes = 25
 
-    weights_path = run_student_pretraining(
-        device, preDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, num_classes
+    weights_paths = run_student_pretraining(
+        device, preDF_sampled, fm_model, manager, training_manager, class_to_idx, transform_imagenet, num_classes, args
     )
 
     postDF_sampled, test_dict = prepare_streaming_data(
         device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, transform_imagenet, num_classes, top_25_classes
     )
 
-    acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist = run_streaming_experiments(
-        device, postDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, args, num_classes, weights_path, test_dict
+    results_payload = run_streaming_experiments(
+        device, postDF_sampled, manager, training_manager, class_to_idx, transform_imagenet, args, num_classes, weights_paths, test_dict
     )
 
-    save_experiment_results(acc_inf, hist_inf, cl_inf, acc_ft, hist_ft, cl_ft, acc_dist, hist_dist, cl_dist)
+    save_experiment_results(results_payload)
 
 
 if __name__ == "__main__":

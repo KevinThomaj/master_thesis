@@ -380,7 +380,8 @@ class TrainingManager:
                      ema=None,
                      inference_only=False,
                      test_dict=None,
-                     window_size=200):
+                     window_size=200,
+                     freeze_distillator=False):
         """
         Ottimizzato con DataLoader (I/O asincrono), inferenza batched su GPU,
         e calcolo dell'accuratezza globale.
@@ -554,7 +555,10 @@ class TrainingManager:
             # --- 6. TRAINING (ONLINE LEARNING) ---
             model.train()
             if distillator is not None:
-                distillator.train()
+                if freeze_distillator:
+                    distillator.eval()
+                else:
+                    distillator.train()
 
             for epoch in range(num_epochs_per_batch):
                 optimizer.zero_grad()
@@ -566,6 +570,12 @@ class TrainingManager:
                 if active_classes is not None:
                     mask = torch.ones_like(logits, dtype=torch.bool)
                     mask[:, active_classes] = False
+                    
+                    # CRITICAL FIX: Ensure the true label is NEVER masked, even if it's from 
+                    # an old concept in a boundary-crossing batch. This prevents NaN loss.
+                    batch_indices = torch.arange(logits.size(0), device=logits.device)
+                    mask[batch_indices, batch_labels] = False
+                    
                     logits[mask] = -float('inf')
 
                 loss_ce = criterion(logits, batch_labels)
@@ -594,7 +604,7 @@ class TrainingManager:
 
         return final_acc, history, cl_matrix
 
-    def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=50, lr=1e-3):
+    def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=1, lr=1e-3):
 
 
         print("\n--- Starting Offline Linear Probing ---")

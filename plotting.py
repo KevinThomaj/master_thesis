@@ -41,67 +41,104 @@ def main():
         print(f"Error: Could not find '{file_path}'. Make sure it is in the same directory as this script.")
         return
 
-    # 2. Extract histories and final accuracies
-    hist_inf = results["inference"]["history"]
-    acc_inf = results["inference"]["final_accuracy"]
-    cl_inf = results["inference"].get("cl_matrix", [])
+    colors = {
+        "exp_1": "red",
+        "exp_2": "darkred",
+        "exp_3": "blue",
+        "exp_4": "cyan",
+        "exp_5": "green",
+        "exp_6": "lime",
+        "exp_7": "orange"
+    }
+    
+    labels = {
+        "exp_1": "Exp 1: S(hist) + S(inf)",
+        "exp_2": "Exp 2: S+P(hist) + S(inf)",
+        "exp_3": "Exp 3: S(hist) + S(stream)",
+        "exp_4": "Exp 4: S(hist) + S+P(stream)",
+        "exp_5": "Exp 5: S+P(hist) + S+P(stream)",
+        "exp_6": "Exp 6: S+P(hist) + S(stream, P frozen)",
+        "exp_7": "Exp 7: S+P(hist) + S(stream, no P)"
+    }
 
-    hist_ft = results["fine_tuning"]["history"]
-    acc_ft = results["fine_tuning"]["final_accuracy"]
-    cl_ft = results["fine_tuning"].get("cl_matrix", [])
+    # -------------------------------------------------------------
+    # 1) DETAILED FIGURE PER EXPERIMENT
+    # -------------------------------------------------------------
+    for exp_key, data in results.items():
+        if not exp_key.startswith('exp_'):
+            continue
+            
+        hist = data["history"]
+        acc = data["final_accuracy"]
+        cl = data.get("cl_matrix", [])
+        color = colors.get(exp_key, "black")
+        label = labels.get(exp_key, exp_key)
 
-    hist_dist = results["distillation"]["history"]
-    acc_dist = results["distillation"]["final_accuracy"]
-    cl_dist = results["distillation"].get("cl_matrix", [])
+        fig = plt.figure(figsize=(16, 6))
+        
+        # Left subplot: Accuracies
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.plot(hist['total_samples_seen'], hist['cumulative_accuracy'],
+                 label=f"Cumulative Acc. [{acc:.1f}%]", color=color, linestyle='-', linewidth=2)
+                 
+        if 'rolling_accuracy' in hist:
+            ax1.plot(hist['total_samples_seen'], hist['rolling_accuracy'],
+                     label="Rolling Acc.", color=color, linestyle=':', alpha=0.6, linewidth=1.5)
 
-    # 3. Setup the plot for Streaming Accuracies
+        if 'drift_points' in hist:
+            for drift_pt in hist['drift_points']:
+                ax1.axvline(x=drift_pt, color='gray', linestyle='--', alpha=0.7)
+                bottom_y = ax1.get_ylim()[0]
+                ax1.text(drift_pt + 10, bottom_y + 5, 'Concept Drift', rotation=90, color='gray', fontsize=9)
+                
+        ax1.set_title(f"Streaming Accuracy", fontsize=14, pad=10)
+        ax1.set_xlabel("Total Samples Seen", fontsize=11)
+        ax1.set_ylabel("Accuracy (%)", fontsize=11)
+        ax1.legend(loc="lower right", frameon=True)
+        ax1.grid(True, linestyle='--', alpha=0.6)
+        
+        # Right subplot: CL Matrix Heatmap
+        ax2 = fig.add_subplot(1, 2, 2)
+        if cl:
+            plot_cl_matrix(cl, "Continual Learning Matrix", ax2)
+        else:
+            ax2.text(0.5, 0.5, 'No CL Matrix Data', horizontalalignment='center', verticalalignment='center')
+            ax2.axis('off')
+            
+        fig.suptitle(label, fontsize=16, fontweight='bold')
+        fig.tight_layout()
+
+    # -------------------------------------------------------------
+    # 2) SUMMARY FIGURE (Only Cumulative Accuracy for comparison)
+    # -------------------------------------------------------------
     plt.figure(figsize=(12, 7))
+    drift_points_plotted = False
 
-    # Plot Pure Inference
-    plt.plot(hist_inf['total_samples_seen'], hist_inf['cumulative_accuracy'],
-             label=f"Pure Inference (Cum.) [{acc_inf:.1f}%]", color='red', linestyle='-', linewidth=2)
-    if 'rolling_accuracy' in hist_inf:
-        plt.plot(hist_inf['total_samples_seen'], hist_inf['rolling_accuracy'],
-                 label=f"Pure Inference (Roll.)", color='red', linestyle=':', alpha=0.6, linewidth=1.5)
+    for exp_key, data in results.items():
+        if not exp_key.startswith('exp_'):
+            continue
+            
+        hist = data["history"]
+        acc = data["final_accuracy"]
+        color = colors.get(exp_key, "black")
+        label = labels.get(exp_key, exp_key)
 
-    # Plot Online Fine-Tuning
-    plt.plot(hist_ft['total_samples_seen'], hist_ft['cumulative_accuracy'],
-             label=f"Online Fine-Tuning (Cum.) [{acc_ft:.1f}%]", color='blue', linewidth=2.5)
-    if 'rolling_accuracy' in hist_ft:
-        plt.plot(hist_ft['total_samples_seen'], hist_ft['rolling_accuracy'],
-                 label=f"Online Fine-Tuning (Roll.)", color='blue', linestyle=':', alpha=0.6, linewidth=1.5)
+        plt.plot(hist['total_samples_seen'], hist['cumulative_accuracy'],
+                 label=f"{label} [{acc:.1f}%]", color=color, linestyle='-', linewidth=2)
 
-    # Plot Distillation
-    plt.plot(hist_dist['total_samples_seen'], hist_dist['cumulative_accuracy'],
-             label=f"Fine-Tuning + Distillation (Cum.) [{acc_dist:.1f}%]", color='green', linewidth=2.5)
-    if 'rolling_accuracy' in hist_dist:
-        plt.plot(hist_dist['total_samples_seen'], hist_dist['rolling_accuracy'],
-                 label=f"Fine-Tuning + Distillation (Roll.)", color='green', linestyle=':', alpha=0.6, linewidth=1.5)
+        if not drift_points_plotted and 'drift_points' in hist:
+            for drift_pt in hist['drift_points']:
+                plt.axvline(x=drift_pt, color='gray', linestyle='--', alpha=0.7)
+            drift_points_plotted = True
 
-    # Add Concept Drift markers (Using drift points from the inference history)
-    for drift_pt in hist_inf['drift_points']:
-        plt.axvline(x=drift_pt, color='gray', linestyle='--', alpha=0.7)
-        # Position the text slightly to the right of the line, near the bottom
-        bottom_y = plt.ylim()[0]
-        plt.text(drift_pt + 10, bottom_y + 5, 'Concept Drift', rotation=90, color='gray', fontsize=9)
-
-    # 4. Formatting
-    plt.title("Prequential Evaluation on Data Stream (2016-2017)", fontsize=16, fontweight='bold', pad=15)
+    plt.title("Summary Comparison: Cumulative Accuracy", fontsize=16, fontweight='bold', pad=15)
     plt.xlabel("Total Samples Seen", fontsize=12)
     plt.ylabel("Accuracy (%)", fontsize=12)
-    plt.legend(loc="lower right", fontsize=11, frameon=True, edgecolor='lightgray')
+    plt.legend(loc="lower right", fontsize=10, frameon=True, edgecolor='lightgray')
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
 
-    # 5. Continual Learning Matrix Heatmaps
-    if cl_inf or cl_ft or cl_dist:
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-        plot_cl_matrix(cl_inf, "CL Matrix: Pure Inference", axes[0])
-        plot_cl_matrix(cl_ft, "CL Matrix: Online Fine-Tuning", axes[1])
-        plot_cl_matrix(cl_dist, "CL Matrix: Fine-Tuning + Distillation", axes[2])
-        plt.tight_layout()
-
-    # 6. Display the plot
+    # Display all figures
     plt.show()
 
 
