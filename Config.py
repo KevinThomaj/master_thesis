@@ -8,6 +8,7 @@ class Config:
     # Streaming Hyperparameters
     stream_batch_size: int = 50
     stream_epochs: int = 1
+    use_ce_masking: bool = False
     
     # Model Configurations
     student_type: str = 'resnet'  # 'resnet' or 'vit'
@@ -16,8 +17,7 @@ class Config:
     mlp_hidden_size: int = 1024
     
     # Learning Rates
-    lr_ft: float = 1e-2
-    lr_dist_student: float = 1e-2
+    lr_ft: float = 1e-3
     lr_dist_proj: float = 1e-3
     
     # Loss Weights
@@ -55,9 +55,7 @@ class Config:
                             help='Number of training epochs per incoming batch.')
         parser.add_argument('--lr_ft', type=float, default=1e-2,
                             help='Learning rate for standard online fine-tuning.')
-        parser.add_argument('--lr_dist_student', type=float, default=1e-2,
-                            help='Learning rate for the student model during distillation.')
-        parser.add_argument('--lr_dist_proj', type=float, default=1e-3,
+        parser.add_argument('--lr_dist_proj', type=float, default=1e-2,
                             help='Learning rate for the distillator projector.')
         parser.add_argument('--distill_weight', type=float, default=1.0,
                             help='Weight lambda for the distillation loss component.')
@@ -71,6 +69,8 @@ class Config:
                             help='Type of distillator projector.')
         parser.add_argument('--mlp_hidden_size', type=int, default=1024,
                             help='Hidden layer size for MLP projector.')
+        parser.add_argument('--use_ce_masking', action='store_true',
+                            help='Enable cross-entropy logit masking for unseen classes during streaming.')
 
         args = parser.parse_args()
         
@@ -78,12 +78,12 @@ class Config:
             stream_batch_size=args.stream_batch_size,
             stream_epochs=args.stream_epochs,
             lr_ft=args.lr_ft,
-            lr_dist_student=args.lr_dist_student,
             lr_dist_proj=args.lr_dist_proj,
             distill_weight=args.distill_weight,
             experiments=args.experiments,
             student_type=args.student_type,
             ema_alpha=args.ema_alpha,
             projector_type=args.projector_type,
-            mlp_hidden_size=args.mlp_hidden_size
+            mlp_hidden_size=args.mlp_hidden_size,
+            use_ce_masking=args.use_ce_masking
         )

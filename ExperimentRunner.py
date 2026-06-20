@@ -28,12 +28,9 @@ def optimizer_student_only(student, distillator, config):
 
 def optimizer_student_and_proj(student, distillator, config):
     return optim.Adam([
-        {'params': student.parameters(), 'lr': config.lr_dist_student},
+        {'params': student.parameters(), 'lr': config.lr_ft},
         {'params': distillator.parameters(), 'lr': config.lr_dist_proj}
     ])
-
-def optimizer_student_only_with_proj_frozen(student, distillator, config):
-    return optim.Adam(student.parameters(), lr=config.lr_dist_student)
 
 def get_experiment_registry() -> Dict[int, ExperimentSetup]:
     """
@@ -99,7 +96,7 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             distillator_active=True,
             freeze_distillator=True,
             use_ema=False,
-            optimizer_setup=optimizer_student_only_with_proj_frozen
+            optimizer_setup=optimizer_student_only
         ),
         7: ExperimentSetup(
             description="(Student + Projector) finetuned on historic + (student finetuned on stream, no projector)",
@@ -215,7 +212,8 @@ class ExperimentRunner:
                 num_epochs_per_batch=self.config.stream_epochs,
                 batch_size=self.config.stream_batch_size,
                 test_dict=test_dict,
-                freeze_distillator=setup.freeze_distillator
+                freeze_distillator=setup.freeze_distillator,
+                use_ce_masking=self.config.use_ce_masking
             )
             
             results_payload[f"exp_{exp_id}"] = {

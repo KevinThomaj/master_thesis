@@ -381,7 +381,8 @@ class TrainingManager:
                      inference_only=False,
                      test_dict=None,
                      window_size=200,
-                     freeze_distillator=False):
+                     freeze_distillator=False,
+                     use_ce_masking=False):
         """
         Ottimizzato con DataLoader (I/O asincrono), inferenza batched su GPU,
         e calcolo dell'accuratezza globale.
@@ -567,7 +568,7 @@ class TrainingManager:
                 logits = student_output['logits']
 
                 # --- LOGIT MASKING --- (to prevent forgetting in classification layer)
-                if active_classes is not None:
+                if use_ce_masking and active_classes is not None:
                     mask = torch.ones_like(logits, dtype=torch.bool)
                     mask[:, active_classes] = False
                     logits[mask] = -float('inf')
@@ -598,7 +599,7 @@ class TrainingManager:
 
         return final_acc, history, cl_matrix
 
-    def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=1, lr=1e-3):
+    def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=25, lr=1e-3):
 
 
         print("\n--- Starting Offline Linear Probing ---")
