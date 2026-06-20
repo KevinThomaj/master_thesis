@@ -570,12 +570,6 @@ class TrainingManager:
                 if active_classes is not None:
                     mask = torch.ones_like(logits, dtype=torch.bool)
                     mask[:, active_classes] = False
-                    
-                    # CRITICAL FIX: Ensure the true label is NEVER masked, even if it's from 
-                    # an old concept in a boundary-crossing batch. This prevents NaN loss.
-                    batch_indices = torch.arange(logits.size(0), device=logits.device)
-                    mask[batch_indices, batch_labels] = False
-                    
                     logits[mask] = -float('inf')
 
                 loss_ce = criterion(logits, batch_labels)

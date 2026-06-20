@@ -10,6 +10,7 @@ from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from torch.utils.data import DataLoader
 from wilds import get_dataset
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 
 from FmowTorchDataset import FmowTorchDataset
 
@@ -194,4 +195,73 @@ class FmowManager:
 
         return df
 
+    def prepare_data_splits(self, num_classes=25, pre_samples=2200, post_samples=2300):
+        print("\n--- STEP 1: Total Dataset ---")
+        total_df = self.get_dataset()
 
+        print("\n--- STEP 2: Divide into preDF (2002-2013) and postDF (2016-2017) ---")
+        preDF, postDF = self.divide(total_df)
+
+        # Find the most popular classes in preDF
+        top_classes = preDF['category'].value_counts().nlargest(num_classes).index.tolist()
+        print(f"Top {num_classes} classes identified: {top_classes}")
+
+        # Filter preDF to only include these top classes
+        preDF_top = preDF[preDF['category'].isin(top_classes)].copy()
+
+        # Create the mapping required for the TorchDataset
+        class_to_idx = {cls_name: idx for idx, cls_name in enumerate(top_classes)}
+
+        print(f"\n--- STEP 4: Sample {pre_samples} images per class in preDF ---")
+        preDF_sampled = self.sample_dataset(
+            preDF_top,
+            category_col='category',
+            samples_per_class=pre_samples,
+            random_state=42
+        )
+
+        print(f"\n--- STEP 5: Sample {post_samples} images per class in postDF, shuffle, create/order by concepts ---")
+        # Filter postDF to include the SAME classes
+        postDF_top = postDF[postDF['category'].isin(top_classes)].copy()
+
+        postDF_sampled = self.sample_dataset(
+            postDF_top,
+            category_col='category',
+            samples_per_class=post_samples,
+            random_state=42
+        )
+
+        return preDF_sampled, postDF_sampled, top_classes, class_to_idx, preDF
+
+    def prepare_streaming_concepts(self, postDF_sampled, top_classes, test_size_per_concept=100):
+        # Shuffle and prepare the extended embeddings for the streaming experiments
+        postDF_sampled_final = postDF_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        # Mocking a class_to_concept mapping
+        dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(top_classes)}
+        postDF_sampled_final = self.create_concepts(postDF_sampled_final, dummy_concept_mapping)
+
+        # Order by the newly created concepts
+        postDF_sampled_final = postDF_sampled_final.sort_values(by='concept').reset_index(drop=True)
+
+        # Split into stream_df and test_dict
+        stream_parts = []
+        test_dict = {}
+        
+        # Group by concept and split
+        for concept, group in postDF_sampled_final.groupby('concept', sort=False):
+            stream_part, test_part = train_test_split(
+                group, 
+                test_size=test_size_per_concept, 
+                stratify=group['category'], 
+                random_state=42
+            )
+                
+            stream_parts.append(stream_part)
+            if len(test_part) > 0:
+                test_dict[concept] = test_part
+                
+        # Re-concatenate the stream parts
+        stream_df = pd.concat(stream_parts).reset_index(drop=True)
+
+        return stream_df, test_dict
