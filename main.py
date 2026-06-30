@@ -141,7 +141,7 @@ def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_m
     return weights_paths
 
 
-def prepare_streaming_data_and_eval(device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config, top_25_classes):
+def prepare_streaming_data_and_eval(device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config, top_25_classes,config_id):
     print("\n--- STEP 7a: Extracting Embeddings for Raw Foundation Model ---")
     fm_model_raw = FoundationModel(use_lora=False).to(device)
     fm_model_raw.eval()
@@ -185,8 +185,9 @@ def prepare_streaming_data_and_eval(device, postDF_sampled, fm_model, manager, t
     stream_df, test_dict = manager.prepare_streaming_concepts(
         postDF_sampled=postDF_ext_embed,
         top_classes=top_25_classes,
-        test_size_per_concept=config.test_size_per_concept
-    )
+        test_size_per_concept=config.test_size_per_concept,
+        config_id=config_id
+        )
 
     return stream_df, test_dict
 
@@ -220,23 +221,34 @@ def main():
         device, preDF_sampled, fm_model, manager, training_manager, class_to_idx, config
     )
 
-    postDF_sampled, test_dict = prepare_streaming_data_and_eval(
-        device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config, top_25_classes
-    )
+    results_payload = {}
     
+    for conf_id in config.concept_configurations:
+        print(f"\n{'='*25} RUNNING CONCEPT CONFIGURATION {conf_id} {'='*25}")
+        postDF_sampled_conf, test_dict = prepare_streaming_data_and_eval(
+            device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config, top_25_classes, conf_id
+        )
+        
+        # Cleanup FM after embeddings extraction to free VRAM for the streaming phase if needed
+        # We'll just do it after the first config or do it inside prepare_streaming_data_and_eval?
+        # Note: fm_model is needed for each configuration's embedding extraction unless we extract once.
+        # But prepare_streaming_data_and_eval does extraction. Actually, extraction is independent of concept grouping.
+        # So we could extract once, but to keep it simple we just let it run or rely on the disk cache.
+
+        runner = ExperimentRunner(device, config, manager, training_manager)
+        conf_results = runner.run_experiments(
+            experiments=config.experiments,
+            df_sampled=postDF_sampled_conf,
+            class_to_idx=class_to_idx,
+            weights_paths=weights_paths,
+            test_dict=test_dict
+        )
+        results_payload[f"config_{conf_id}"] = conf_results
+
     # Cleanup FM
     del fm_model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-    runner = ExperimentRunner(device, config, manager, training_manager)
-    results_payload = runner.run_experiments(
-        experiments=config.experiments,
-        df_sampled=postDF_sampled,
-        class_to_idx=class_to_idx,
-        weights_paths=weights_paths,
-        test_dict=test_dict
-    )
 
     save_experiment_results(results_payload)
 

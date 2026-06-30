@@ -25,6 +25,7 @@ class Config:
     
     # Experiments
     experiments: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 7])
+    concept_configurations: List[int] = field(default_factory=lambda: [1, 2, 3])
     
     # Data params
     num_classes: int = 25
@@ -61,6 +62,8 @@ class Config:
                             help='Weight lambda for the distillation loss component.')
         parser.add_argument('--experiments', nargs='+', type=int, default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                             help='List of experiments to run. Default is all.')
+        parser.add_argument('--concept_configurations', nargs='+', type=int, default=[1, 2, 3],
+                            help='List of concept configurations to test. Default is 1, 2, 3.')
         parser.add_argument('--student_type', type=str, default='resnet', choices=['resnet', 'vit'],
                             help='Type of student model: resnet or vit.')
         parser.add_argument('--ema_alpha', type=float, default=0.99,
@@ -81,6 +84,7 @@ class Config:
             lr_dist_proj=args.lr_dist_proj,
             distill_weight=args.distill_weight,
             experiments=args.experiments,
+            concept_configurations=args.concept_configurations,
             student_type=args.student_type,
             ema_alpha=args.ema_alpha,
             projector_type=args.projector_type,

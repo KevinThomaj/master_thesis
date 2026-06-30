@@ -233,12 +233,26 @@ class FmowManager:
 
         return preDF_sampled, postDF_sampled, top_classes, class_to_idx, preDF
 
-    def prepare_streaming_concepts(self, postDF_sampled, top_classes, test_size_per_concept=100):
+    def prepare_streaming_concepts(self, postDF_sampled, top_classes, test_size_per_concept=100, config_id=1):
         # Shuffle and prepare the extended embeddings for the streaming experiments
         postDF_sampled_final = postDF_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
 
-        # Mocking a class_to_concept mapping
-        dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(top_classes)}
+        if config_id == 1:
+            # Config 1: Modulo grouping
+            dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(top_classes)}
+        elif config_id == 2:
+            # Config 2: Sequential grouping (blocks of 5)
+            dummy_concept_mapping = {cls: (f"Concept_{((i // 5) % 5)}") for i, cls in enumerate(top_classes)}
+        elif config_id == 3:
+            # Config 3: Pseudo-random grouping
+            import random
+            rng = random.Random(42)
+            shuffled_classes = top_classes.copy()
+            rng.shuffle(shuffled_classes)
+            dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(shuffled_classes)}
+        else:
+            dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(top_classes)}
+
         postDF_sampled_final = self.create_concepts(postDF_sampled_final, dummy_concept_mapping)
 
         # Order by the newly created concepts

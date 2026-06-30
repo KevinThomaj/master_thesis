@@ -9,6 +9,7 @@ import os
 import collections
 
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 import torch.optim as optim
@@ -380,7 +381,7 @@ class TrainingManager:
                      ema=None,
                      inference_only=False,
                      test_dict=None,
-                     window_size=200,
+                     window_size=500,
                      freeze_distillator=False,
                      use_ce_masking=False):
         """
@@ -428,7 +429,7 @@ class TrainingManager:
             'rolling_accuracy': []
         }
         
-        rolling_window = collections.deque(maxlen=window_size)
+        concept_metrics = {}
         cl_matrix = []
         
         def evaluate_test_sets(current_concept):
@@ -472,10 +473,6 @@ class TrainingManager:
             }
 
         # Counters
-        global_correct = 0
-        global_total = 0
-        concept_correct = 0
-        concept_number_images = 0
         current_concept = None
         total_samples_seen = 0
         active_classes = None
@@ -519,6 +516,7 @@ class TrainingManager:
                     #active class in current concept
                     active_class_list = [class_to_idx[c] for c in df[df['concept'] == current_concept]['category'].unique() if c in class_to_idx]
                     active_classes = torch.tensor(active_class_list, dtype=torch.long, device=self.device)
+                    concept_metrics[current_concept] = []
                 elif row_concept != current_concept:
                     print(f"\n--- DRIFT DETECTED: Transition da Concept {current_concept} a Concept {row_concept} ---")
                     history['drift_points'].append(total_samples_seen)
@@ -526,28 +524,14 @@ class TrainingManager:
                     if test_loaders:
                         cl_matrix.append(evaluate_test_sets(current_concept))
                         
-                    concept_correct = 0
-                    concept_number_images = 0
                     current_concept = row_concept
                     active_class_list = [class_to_idx[c] for c in df[df['concept'] == current_concept]['category'].unique() if c in class_to_idx]
                     active_classes = torch.tensor(active_class_list, dtype=torch.long, device=self.device)
+                    concept_metrics[current_concept] = []
 
                 is_correct = (predicted_classes[i] == batch_labels[i]).item()
-                if is_correct:
-                    concept_correct += 1
-                    global_correct += 1
-                    
-                rolling_window.append(is_correct)
-                rolling_acc = (sum(rolling_window) / len(rolling_window)) * 100
-
-                concept_number_images += 1
-                global_total += 1
+                concept_metrics[current_concept].append(is_correct)
                 total_samples_seen += 1
-
-                acc_corrente = (concept_correct / concept_number_images) * 100
-                history['total_samples_seen'].append(total_samples_seen)
-                history['cumulative_accuracy'].append(acc_corrente)
-                history['rolling_accuracy'].append(rolling_acc)
 
             # --- 5. BIVIO INFERENZA VS TRAINING ---
             if inference_only:
@@ -591,13 +575,42 @@ class TrainingManager:
             cl_matrix.append(evaluate_test_sets(current_concept))
 
         # --- 7. FINAL METRICS ---
-        final_acc = (concept_correct / concept_number_images) * 100 if concept_number_images > 0 else 0
-        global_acc = (global_correct / global_total) * 100 if global_total > 0 else 0
+        calc_acc = lambda x: float(np.mean(x) * 100) if len(x) > 0 else 0.0
+
+        detailed_metrics = {}
+        all_results = []
+        for concept, results in concept_metrics.items():
+            res_arr = np.array(results)
+            all_results.extend(results)
+            
+            detailed_metrics[concept] = {
+                'total_accuracy': calc_acc(res_arr),
+                'first_window_accuracy': calc_acc(res_arr[:window_size]),
+                'final_window_accuracy': calc_acc(res_arr[-window_size:]),
+                'after_first_window_accuracy': calc_acc(res_arr[window_size:window_size*2]),
+            }
+            # Vectorized cumulative accuracy per concept
+            cum_acc = np.cumsum(res_arr) / np.arange(1, len(res_arr) + 1) * 100
+            history['cumulative_accuracy'].extend(cum_acc.tolist())
+            
+        total_concept_accuracies = [m['total_accuracy'] for m in detailed_metrics.values()]
+        detailed_metrics['average_across_concepts'] = float(np.mean(total_concept_accuracies)) if total_concept_accuracies else 0.0
+        history['detailed_metrics'] = detailed_metrics
+        
+        history['total_samples_seen'] = list(range(1, len(all_results) + 1))
+        
+        # Vectorized rolling accuracy globally
+        if all_results:
+            res_series = pd.Series(all_results)
+            history['rolling_accuracy'] = res_series.rolling(window_size, min_periods=1).mean().multiply(100).tolist()
+
+        final_acc = detailed_metrics.get(current_concept, {}).get('total_accuracy', 0.0)
+        global_acc = calc_acc(all_results)
 
         print(f"\n--- Fine Stream | Accuratezza Finale Concept {current_concept}: {final_acc:.2f}% ---")
         print(f"--- Accuratezza Globale (Tutti i Concept): {global_acc:.2f}% ---")
 
-        return final_acc, history, cl_matrix
+        return global_acc, history, cl_matrix
 
     def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=25, lr=1e-3):
 
