@@ -50,13 +50,13 @@ class Config:
     @staticmethod
     def parse_arguments():
         parser = argparse.ArgumentParser(description="Fmow Streaming Experiments Pipeline")
-        parser.add_argument('--stream_batch_size', type=int, default=50,
+        parser.add_argument('--stream_batch_size', type=int, default=10,
                             help='Batch size for the online streaming phase.')
         parser.add_argument('--stream_epochs', type=int, default=1,
                             help='Number of training epochs per incoming batch.')
-        parser.add_argument('--lr_ft', type=float, default=1e-2,
+        parser.add_argument('--lr_ft', type=float, default=1e-4,
                             help='Learning rate for standard online fine-tuning.')
-        parser.add_argument('--lr_dist_proj', type=float, default=1e-2,
+        parser.add_argument('--lr_dist_proj', type=float, default=1e-3,
                             help='Learning rate for the distillator projector.')
         parser.add_argument('--distill_weight', type=float, default=1.0,
                             help='Weight lambda for the distillation loss component.')

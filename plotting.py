@@ -58,6 +58,79 @@ def export_detailed_metrics_table(config_key, config_data, labels):
     print(f"\n[{config_key}] Exported detailed per-concept metrics to {csv_filename}")
 
 
+def plot_adaptation_speed(results, labels):
+    exp_metrics = {}
+    
+    for config_key, config_data in results.items():
+        if not config_key.startswith('config_'):
+            continue
+            
+        for exp_key, data in config_data.items():
+            if not exp_key.startswith('exp_'):
+                continue
+                
+            det_met = data.get('history', {}).get('detailed_metrics', {})
+            concept_keys = [k for k in det_met.keys() if k != 'average_across_concepts']
+            
+            if not concept_keys:
+                continue
+                
+            if exp_key not in exp_metrics:
+                exp_metrics[exp_key] = {
+                    'first_window_acc_sum': 0.0,
+                    'after_first_window_acc_sum': 0.0,
+                    'count': 0
+                }
+                
+            for concept in concept_keys:
+                metrics = det_met[concept]
+                exp_metrics[exp_key]['first_window_acc_sum'] += metrics.get('first_window_accuracy', 0)
+                exp_metrics[exp_key]['after_first_window_acc_sum'] += metrics.get('after_first_window_accuracy', 0)
+                exp_metrics[exp_key]['count'] += 1
+
+    if not exp_metrics:
+        print("No detailed metrics found for adaptation speed plot.")
+        return
+        
+    def get_exp_num(k):
+        try:
+            return int(k.split('_')[1])
+        except:
+            return 999
+            
+    exp_keys_sorted = sorted(list(exp_metrics.keys()), key=get_exp_num)
+    
+    experiment_names = []
+    first_window_means = []
+    after_first_window_means = []
+    
+    for exp_key in exp_keys_sorted:
+        metrics = exp_metrics[exp_key]
+        count = metrics['count']
+        if count > 0:
+            experiment_names.append(labels.get(exp_key, exp_key))
+            first_window_means.append(metrics['first_window_acc_sum'] / count)
+            after_first_window_means.append(metrics['after_first_window_acc_sum'] / count)
+            
+    x = np.arange(len(experiment_names))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(14, 8))
+    rects1 = ax.bar(x - width/2, first_window_means, width, label='First 500 Images (Adaptation)', color='skyblue')
+    rects2 = ax.bar(x + width/2, after_first_window_means, width, label='After First 500 Images (Stability)', color='lightcoral')
+    
+    ax.set_ylabel('Accuracy (%)', fontsize=12)
+    ax.set_title('Adaptation Speed: First 500 Images vs After 500 Images\n(Mean across all Concepts & Configs)', fontsize=14, fontweight='bold', pad=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels(experiment_names, rotation=45, ha='right', fontsize=10)
+    ax.legend(loc='lower right')
+    
+    ax.bar_label(rects1, padding=3, fmt='%.1f')
+    ax.bar_label(rects2, padding=3, fmt='%.1f')
+    
+    fig.tight_layout()
+
+
 def main():
     # 1. Load the exported JSON data
     file_path = "experiment_results.json"
@@ -188,6 +261,11 @@ def main():
         # 4) EXPORT DETAILED METRICS TABLE
         # -------------------------------------------------------------
         export_detailed_metrics_table(config_key, config_data, labels)
+
+    # -------------------------------------------------------------
+    # 5) ADAPTATION SPEED FIGURE (Mean across all configs)
+    # -------------------------------------------------------------
+    plot_adaptation_speed(results, labels)
 
     # Display all figures
     plt.show()

@@ -213,8 +213,7 @@ class ExperimentRunner:
                 batch_size=self.config.stream_batch_size,
                 test_dict=test_dict,
                 freeze_distillator=setup.freeze_distillator,
-                use_ce_masking=self.config.use_ce_masking,
-                window_size=200
+                use_ce_masking=self.config.use_ce_masking
             )
             
             results_payload[f"exp_{exp_id}"] = {
