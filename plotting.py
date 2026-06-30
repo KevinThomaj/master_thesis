@@ -2,6 +2,7 @@ import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+import pandas as pd
 
 
 def plot_cl_matrix(cl_matrix, title, ax):
@@ -29,63 +30,32 @@ def plot_cl_matrix(cl_matrix, title, ax):
     ax.set_xlabel("Evaluated on Concept")
     ax.set_ylabel("Trained on Concept")
 
-def plot_detailed_metrics_bar(config_key, config_data, labels, colors):
-    exp_metrics = {}
+def export_detailed_metrics_table(config_key, config_data, labels):
+    records = []
     for exp_key, data in config_data.items():
         if not exp_key.startswith('exp_'): continue
         det_met = data['history'].get('detailed_metrics', {})
+        exp_name = labels.get(exp_key, exp_key)
         
         concept_keys = [k for k in det_met.keys() if k != 'average_across_concepts']
-        if not concept_keys: continue
-        
-        avg_first = np.mean([det_met[c].get('first_window_accuracy', 0) for c in concept_keys])
-        avg_final = np.mean([det_met[c].get('final_window_accuracy', 0) for c in concept_keys])
-        avg_after = np.mean([det_met[c].get('after_first_window_accuracy', 0) for c in concept_keys])
-        avg_total = det_met.get('average_across_concepts', 0)
-        
-        exp_metrics[exp_key] = {
-            'First Window': avg_first,
-            'Final Window': avg_final,
-            'After First Window': avg_after,
-            'Total': avg_total
-        }
-        
-    if not exp_metrics:
+        for concept in concept_keys:
+            metrics = det_met[concept]
+            records.append({
+                'Experiment': exp_name,
+                'Concept': concept,
+                'First Window Acc': metrics.get('first_window_accuracy', 0),
+                'After First Window Acc': metrics.get('after_first_window_accuracy', 0),
+                'Final Window Acc': metrics.get('final_window_accuracy', 0),
+                'Total Acc': metrics.get('total_accuracy', 0)
+            })
+            
+    if not records:
         return
-
-    metrics_names = ['First Window', 'Final Window', 'After First Window', 'Total']
-    exp_keys = list(exp_metrics.keys())
-    
-    x = np.arange(len(metrics_names))
-    width = 0.8 / len(exp_keys)
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    for i, exp_key in enumerate(exp_keys):
-        vals = [exp_metrics[exp_key][m] for m in metrics_names]
-        color = colors.get(exp_key, 'black')
-        label = labels.get(exp_key, exp_key)
         
-        # Offset bars
-        offset = (i - len(exp_keys) / 2) * width + width / 2
-        bars = ax.bar(x + offset, vals, width, label=label, color=color, alpha=0.8)
-        
-        # Add values on top of bars
-        for bar in bars:
-            height = bar.get_height()
-            ax.annotate(f'{height:.1f}',
-                        xy=(bar.get_x() + bar.get_width() / 2, height),
-                        xytext=(0, 3),  # 3 points vertical offset
-                        textcoords="offset points",
-                        ha='center', va='bottom', fontsize=8, rotation=90)
-
-    ax.set_ylabel('Average Accuracy (%)')
-    ax.set_title(f'Detailed Metrics Comparison - {config_key}')
-    ax.set_xticks(x)
-    ax.set_xticklabels(metrics_names)
-    ax.legend(loc='upper left', bbox_to_anchor=(1.05, 1))
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
-    plt.tight_layout()
+    df = pd.DataFrame(records)
+    csv_filename = f"detailed_metrics_{config_key}.csv"
+    df.round(2).to_csv(csv_filename, index=False)
+    print(f"\n[{config_key}] Exported detailed per-concept metrics to {csv_filename}")
 
 
 def main():
@@ -213,11 +183,11 @@ def main():
         plt.legend(loc="lower right", fontsize=10, frameon=True, edgecolor='lightgray')
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
-        
+
         # -------------------------------------------------------------
-        # 3) DETAILED METRICS BAR CHART
+        # 4) EXPORT DETAILED METRICS TABLE
         # -------------------------------------------------------------
-        plot_detailed_metrics_bar(config_key, config_data, labels, colors)
+        export_detailed_metrics_table(config_key, config_data, labels)
 
     # Display all figures
     plt.show()
