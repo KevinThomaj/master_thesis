@@ -68,7 +68,7 @@ def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_m
                 student_base = StudentVit(numberOfClasses=config.num_classes, pretrained=True).to(device)
             else:
                 student_base = Student(numberOfClasses=config.num_classes, pretrained=True).to(device)
-                
+            #TODO Attention we need two different files, to save weights for resnet and ViT    
             student_pretrained, _ = training_manager.pretrain_student(
                 student=student_base,
                 df=preDF_sampled,
@@ -228,7 +228,7 @@ def main():
         postDF_sampled_conf, test_dict = prepare_streaming_data_and_eval(
             device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config, top_25_classes, conf_id
         )
-        
+        #TODO Avoid calculating embeddding and linear probing multiple times
         # Cleanup FM after embeddings extraction to free VRAM for the streaming phase if needed
         # We'll just do it after the first config or do it inside prepare_streaming_data_and_eval?
         # Note: fm_model is needed for each configuration's embedding extraction unless we extract once.

@@ -612,13 +612,13 @@ class TrainingManager:
 
         return global_acc, history, cl_matrix
 
-    def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=25, lr=1e-3):
+    def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=100, lr=1e-3):
 
 
         print("\n--- Starting Offline Linear Probing ---")
         
         train_df, test_df = train_test_split(
-            df_embeddings, test_size=0.2, stratify=df_embeddings['category'], random_state=42
+            df_embeddings, test_size=0.5, stratify=df_embeddings['category'], random_state=42
         )
         
         # Prepare Tensors
