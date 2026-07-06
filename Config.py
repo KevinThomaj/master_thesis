@@ -26,6 +26,7 @@ class Config:
     # Experiments
     experiments: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 7])
     concept_configurations: List[int] = field(default_factory=lambda: [1, 2, 3])
+    recurrent_concept: str = None
     
     # Data params
     num_classes: int = 25
@@ -84,6 +85,8 @@ class Config:
                             help='Hidden layer size for MLP projector.')
         parser.add_argument('--use_ce_masking', action='store_true',
                             help='Enable cross-entropy logit masking for unseen classes during streaming.')
+        parser.add_argument('--recurrent_concept', type=str, default=None,
+                            help='The name of a concept to repeat at the end of the stream (e.g., Concept_1).')
 
         args = parser.parse_args()
         
@@ -99,5 +102,6 @@ class Config:
             ema_alpha=args.ema_alpha,
             projector_type=args.projector_type,
             mlp_hidden_size=args.mlp_hidden_size,
-            use_ce_masking=args.use_ce_masking
+            use_ce_masking=args.use_ce_masking,
+            recurrent_concept=args.recurrent_concept
         )

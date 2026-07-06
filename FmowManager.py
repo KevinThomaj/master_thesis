@@ -233,7 +233,7 @@ class FmowManager:
 
         return preDF_sampled, postDF_sampled, top_classes, class_to_idx, preDF
 
-    def prepare_streaming_concepts(self, postDF_sampled, top_classes, test_size_per_concept=100, config_id=1):
+    def prepare_streaming_concepts(self, postDF_sampled, top_classes, test_size_per_concept=100, config_id=1, recurrent_concept=None):
         # Shuffle and prepare the extended embeddings for the streaming experiments
         postDF_sampled_final = postDF_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
 
@@ -261,6 +261,7 @@ class FmowManager:
         # Split into stream_df and test_dict
         stream_parts = []
         test_dict = {}
+        recurrent_part = None
         
         # Group by concept and split
         for concept, group in postDF_sampled_final.groupby('concept', sort=False):
@@ -274,6 +275,14 @@ class FmowManager:
             stream_parts.append(stream_part)
             if len(test_part) > 0:
                 test_dict[concept] = test_part
+                
+            if recurrent_concept is not None and concept == recurrent_concept:
+                recurrent_part = stream_part.copy()
+                
+        if recurrent_part is not None:
+            recurrent_part['concept'] = f"{recurrent_concept}_recurrent"
+            print(f"Adding recurrent concept {recurrent_concept} to the end of the stream.")
+            stream_parts.append(recurrent_part)
                 
         # Re-concatenate the stream parts
         stream_df = pd.concat(stream_parts).reset_index(drop=True)

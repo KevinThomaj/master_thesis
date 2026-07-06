@@ -40,12 +40,15 @@ def plot_forgetting(cl_matrix, title, ax):
     final_acc = []
     
     for i, concept in enumerate(train_concepts):
+        # If it's a recurrent concept, we need to map it back to the original test concept key
+        eval_key = concept.replace('_recurrent', '') if '_recurrent' in concept else concept
+
         # Accuracy immediately after learning the concept
-        immediate = cl_matrix[i]['evaluations'].get(concept, 0)
+        immediate = cl_matrix[i]['evaluations'].get(eval_key, 0)
         immediate_acc.append(immediate)
         
         # Accuracy at the end of the stream
-        final = cl_matrix[-1]['evaluations'].get(concept, 0)
+        final = cl_matrix[-1]['evaluations'].get(eval_key, 0)
         final_acc.append(final)
         
     x = np.arange(len(train_concepts))

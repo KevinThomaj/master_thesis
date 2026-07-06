@@ -186,7 +186,8 @@ def prepare_streaming_data_and_eval(device, postDF_sampled, fm_model, manager, t
         postDF_sampled=postDF_ext_embed,
         top_classes=top_25_classes,
         test_size_per_concept=config.test_size_per_concept,
-        config_id=config_id
+        config_id=config_id,
+        recurrent_concept=config.recurrent_concept
         )
 
     return stream_df, test_dict
