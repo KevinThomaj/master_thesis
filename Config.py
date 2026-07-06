@@ -33,11 +33,21 @@ class Config:
     post_samples_per_class: int = 2300
     test_size_per_concept: int = 100
     
-    # Paths
-    fm_weights_path: str = "./pretrained_dinov2_lora.pth"
-    student_weights_path: str = "./pretrained_student_weights.pth"
-    student_proj_weights_path: str = "./pretrained_student_proj_weights.pth"
-    proj_weights_path: str = "./pretrained_projector_weights.pth"
+    @property
+    def fm_weights_path(self) -> str:
+        return "./pretrained_dinov2_lora.pth"
+
+    @property
+    def student_weights_path(self) -> str:
+        return f"./pretrained_student_weights_{self.student_type}.pth"
+
+    @property
+    def student_proj_weights_path(self) -> str:
+        return f"./pretrained_student_proj_weights_{self.student_type}_{self.projector_type}.pth"
+
+    @property
+    def proj_weights_path(self) -> str:
+        return f"./pretrained_projector_weights_{self.student_type}_{self.projector_type}.pth"
 
     # Default Transforms
     @property

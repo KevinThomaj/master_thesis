@@ -618,7 +618,7 @@ class TrainingManager:
         print("\n--- Starting Offline Linear Probing ---")
         
         train_df, test_df = train_test_split(
-            df_embeddings, test_size=0.5, stratify=df_embeddings['category'], random_state=42
+            df_embeddings, test_size=0.3, stratify=df_embeddings['category'], random_state=42
         )
         
         # Prepare Tensors

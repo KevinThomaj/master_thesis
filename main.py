@@ -68,7 +68,7 @@ def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_m
                 student_base = StudentVit(numberOfClasses=config.num_classes, pretrained=True).to(device)
             else:
                 student_base = Student(numberOfClasses=config.num_classes, pretrained=True).to(device)
-            #TODO Attention we need two different files, to save weights for resnet and ViT    
+            
             student_pretrained, _ = training_manager.pretrain_student(
                 student=student_base,
                 df=preDF_sampled,

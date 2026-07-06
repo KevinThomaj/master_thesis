@@ -30,6 +30,42 @@ def plot_cl_matrix(cl_matrix, title, ax):
     ax.set_xlabel("Evaluated on Concept")
     ax.set_ylabel("Trained on Concept")
 
+def plot_forgetting(cl_matrix, title, ax):
+    if not cl_matrix or len(cl_matrix) < 2:
+        return
+        
+    train_concepts = [entry['train_concept'] for entry in cl_matrix]
+    
+    immediate_acc = []
+    final_acc = []
+    
+    for i, concept in enumerate(train_concepts):
+        # Accuracy immediately after learning the concept
+        immediate = cl_matrix[i]['evaluations'].get(concept, 0)
+        immediate_acc.append(immediate)
+        
+        # Accuracy at the end of the stream
+        final = cl_matrix[-1]['evaluations'].get(concept, 0)
+        final_acc.append(final)
+        
+    x = np.arange(len(train_concepts))
+    width = 0.35
+    
+    ax.bar(x - width/2, immediate_acc, width, label='Right after learning', color='skyblue')
+    ax.bar(x + width/2, final_acc, width, label='At the end of stream', color='lightcoral')
+    
+    ax.set_ylabel('Accuracy (%)')
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(train_concepts, rotation=45, ha='right')
+    ax.legend()
+    
+    # Add values on top of bars
+    for i, v in enumerate(immediate_acc):
+        ax.text(i - width/2, v + 1, f'{v:.1f}', ha='center', va='bottom', fontsize=9)
+    for i, v in enumerate(final_acc):
+        ax.text(i + width/2, v + 1, f'{v:.1f}', ha='center', va='bottom', fontsize=9)
+
 def export_detailed_metrics_table(config_key, config_data, labels):
     records = []
     for exp_key, data in config_data.items():
@@ -79,6 +115,7 @@ def plot_adaptation_speed(results, labels):
                 exp_metrics[exp_key] = {
                     'first_window_acc_sum': 0.0,
                     'after_first_window_acc_sum': 0.0,
+                    'final_window_acc_sum': 0.0,
                     'count': 0
                 }
                 
@@ -86,6 +123,7 @@ def plot_adaptation_speed(results, labels):
                 metrics = det_met[concept]
                 exp_metrics[exp_key]['first_window_acc_sum'] += metrics.get('first_window_accuracy', 0)
                 exp_metrics[exp_key]['after_first_window_acc_sum'] += metrics.get('after_first_window_accuracy', 0)
+                exp_metrics[exp_key]['final_window_acc_sum'] += metrics.get('final_window_accuracy', 0)
                 exp_metrics[exp_key]['count'] += 1
 
     if not exp_metrics:
@@ -103,6 +141,7 @@ def plot_adaptation_speed(results, labels):
     experiment_names = []
     first_window_means = []
     after_first_window_means = []
+    final_window_means = []
     
     for exp_key in exp_keys_sorted:
         metrics = exp_metrics[exp_key]
@@ -111,22 +150,25 @@ def plot_adaptation_speed(results, labels):
             experiment_names.append(labels.get(exp_key, exp_key))
             first_window_means.append(metrics['first_window_acc_sum'] / count)
             after_first_window_means.append(metrics['after_first_window_acc_sum'] / count)
+            final_window_means.append(metrics['final_window_acc_sum'] / count)
             
     x = np.arange(len(experiment_names))
-    width = 0.35
+    width = 0.25
     
     fig, ax = plt.subplots(figsize=(14, 8))
-    rects1 = ax.bar(x - width/2, first_window_means, width, label='First 500 Images (Adaptation)', color='skyblue')
-    rects2 = ax.bar(x + width/2, after_first_window_means, width, label='After First 500 Images (Stability)', color='lightcoral')
+    rects1 = ax.bar(x - width, first_window_means, width, label='First 500 Images (Adaptation)', color='skyblue')
+    rects2 = ax.bar(x, after_first_window_means, width, label='After First 500 Images (Stability)', color='lightcoral')
+    rects3 = ax.bar(x + width, final_window_means, width, label='Last 500 Images (Final)', color='lightgreen')
     
     ax.set_ylabel('Accuracy (%)', fontsize=12)
-    ax.set_title('Adaptation Speed: First 500 Images vs After 500 Images\n(Mean across all Concepts & Configs)', fontsize=14, fontweight='bold', pad=20)
+    ax.set_title('Adaptation Speed: First, After First, and Last 500 Images\n(Mean across all Concepts & Configs)', fontsize=14, fontweight='bold', pad=20)
     ax.set_xticks(x)
     ax.set_xticklabels(experiment_names, rotation=45, ha='right', fontsize=10)
     ax.legend(loc='lower right')
     
     ax.bar_label(rects1, padding=3, fmt='%.1f')
     ax.bar_label(rects2, padding=3, fmt='%.1f')
+    ax.bar_label(rects3, padding=3, fmt='%.1f')
     
     fig.tight_layout()
 
@@ -193,10 +235,10 @@ def main():
             color = colors.get(exp_key, "black")
             label = labels.get(exp_key, exp_key)
     
-            fig = plt.figure(figsize=(16, 6))
+            fig = plt.figure(figsize=(24, 6))
             
             # Left subplot: Accuracies
-            ax1 = fig.add_subplot(1, 2, 1)
+            ax1 = fig.add_subplot(1, 3, 1)
             ax1.plot(hist['total_samples_seen'], hist['cumulative_accuracy'],
                      label=f"Cumulative Acc. [{acc:.1f}%]", color=color, linestyle='-', linewidth=2)
                      
@@ -216,13 +258,21 @@ def main():
             ax1.legend(loc="lower right", frameon=True)
             ax1.grid(True, linestyle='--', alpha=0.6)
             
-            # Right subplot: CL Matrix Heatmap
-            ax2 = fig.add_subplot(1, 2, 2)
+            # Middle subplot: CL Matrix Heatmap
+            ax2 = fig.add_subplot(1, 3, 2)
             if cl:
                 plot_cl_matrix(cl, "Continual Learning Matrix", ax2)
             else:
                 ax2.text(0.5, 0.5, 'No CL Matrix Data', horizontalalignment='center', verticalalignment='center')
                 ax2.axis('off')
+                
+            # Right subplot: Forgetting comparison
+            ax3 = fig.add_subplot(1, 3, 3)
+            if cl and len(cl) > 1:
+                plot_forgetting(cl, "Forgetting (Immediate vs Final)", ax3)
+            else:
+                ax3.text(0.5, 0.5, 'No Forgetting Data', horizontalalignment='center', verticalalignment='center')
+                ax3.axis('off')
                 
             fig.suptitle(f"{label} ({config_key})", fontsize=16, fontweight='bold')
             fig.tight_layout()
@@ -256,6 +306,41 @@ def main():
         plt.legend(loc="lower right", fontsize=10, frameon=True, edgecolor='lightgray')
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
+
+        # -------------------------------------------------------------
+        # 3) SUMMARY FIGURE (Rolling Accuracy for comparison)
+        # -------------------------------------------------------------
+        has_rolling = any('rolling_accuracy' in data.get('history', {}) for exp_key, data in config_data.items() if exp_key.startswith('exp_'))
+        
+        if has_rolling:
+            plt.figure(figsize=(12, 7))
+            drift_points_plotted = False
+        
+            for exp_key, data in config_data.items():
+                if not exp_key.startswith('exp_'):
+                    continue
+                    
+                hist = data["history"]
+                if 'rolling_accuracy' not in hist:
+                    continue
+                    
+                color = colors.get(exp_key, "black")
+                label = labels.get(exp_key, exp_key)
+        
+                plt.plot(hist['total_samples_seen'], hist['rolling_accuracy'],
+                         label=f"{label}", color=color, linestyle='-', linewidth=2)
+        
+                if not drift_points_plotted and 'drift_points' in hist:
+                    for drift_pt in hist['drift_points']:
+                        plt.axvline(x=drift_pt, color='gray', linestyle='--', alpha=0.7)
+                    drift_points_plotted = True
+        
+            plt.title(f"Summary Comparison: Rolling Accuracy - {config_key}", fontsize=16, fontweight='bold', pad=15)
+            plt.xlabel("Total Samples Seen", fontsize=12)
+            plt.ylabel("Accuracy (%)", fontsize=12)
+            plt.legend(loc="lower right", fontsize=10, frameon=True, edgecolor='lightgray')
+            plt.grid(True, linestyle='--', alpha=0.6)
+            plt.tight_layout()
 
         # -------------------------------------------------------------
         # 4) EXPORT DETAILED METRICS TABLE
