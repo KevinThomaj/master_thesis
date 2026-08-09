@@ -195,9 +195,7 @@ def main():
         "exp_5": "green",
         "exp_6": "lime",
         "exp_7": "orange",
-        "exp_8": "purple",
-        "exp_9": "brown",
-        "exp_10": "magenta"
+        "exp_8": "purple"
     }
     
     labels = {
@@ -208,9 +206,7 @@ def main():
         "exp_5": "Exp 5: S+P(hist) + S+P(stream)",
         "exp_6": "Exp 6: S+P(hist) + S(stream, P frozen)",
         "exp_7": "Exp 7: S+P(hist) + S(stream, no P)",
-        "exp_8": "Exp 8: S(hist) + EMA Teacher",
-        "exp_9": "Exp 9: S+P(hist) + Distillation Stream",
-        "exp_10": "Exp 10: S(hist) + S(stream)"
+        "exp_8": "Exp 8: S(hist) + EMA Teacher"
     }
     
     # Check if results has the new nested config structure or the old flat structure

@@ -71,7 +71,7 @@ class Config:
                             help='Learning rate for the distillator projector.')
         parser.add_argument('--distill_weight', type=float, default=1.0,
                             help='Weight lambda for the distillation loss component.')
-        parser.add_argument('--experiments', nargs='+', type=int, default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        parser.add_argument('--experiments', nargs='+', type=int, default=[1, 2, 3, 4, 5, 6, 7, 8],
                             help='List of experiments to run. Default is all.')
         parser.add_argument('--concept_configurations', nargs='+', type=int, default=[1, 2, 3],
                             help='List of concept configurations to test. Default is 1, 2, 3.')

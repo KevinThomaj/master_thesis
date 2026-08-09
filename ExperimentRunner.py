@@ -118,26 +118,6 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             use_ema=True,
             optimizer_setup=optimizer_student_only
         ),
-        9: ExperimentSetup(
-            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Depends on Config Projector Type)",
-            student_weights_key='student_proj',
-            projector_weights_key='projector',
-            inference_only=False,
-            distillator_active=True,
-            freeze_distillator=False,
-            use_ema=False,
-            optimizer_setup=optimizer_student_and_proj
-        ),
-        10: ExperimentSetup(
-            description="Student finetuned on historic + Student finetuning on stream (Depends on Config Student Type)",
-            student_weights_key='student_only',
-            projector_weights_key=None,
-            inference_only=False,
-            distillator_active=False,
-            freeze_distillator=False,
-            use_ema=False,
-            optimizer_setup=optimizer_student_only
-        ),
     }
 
 class ExperimentRunner:
