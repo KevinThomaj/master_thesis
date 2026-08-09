@@ -22,6 +22,7 @@ class ExperimentSetup:
     freeze_distillator: bool
     use_ema: bool
     optimizer_setup: Callable[[nn.Module, Optional[nn.Module], Config], Optional[optim.Optimizer]]
+    distillation_stop_after: Optional[int] = None
 
 def optimizer_student_only(student, distillator, config):
     return optim.Adam(student.parameters(), lr=config.lr_ft)
@@ -118,6 +119,39 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             use_ema=True,
             optimizer_setup=optimizer_student_only
         ),
+        9: ExperimentSetup(
+            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 1000 images)",
+            student_weights_key='student_proj',
+            projector_weights_key='projector',
+            inference_only=False,
+            distillator_active=True,
+            freeze_distillator=False,
+            use_ema=False,
+            optimizer_setup=optimizer_student_and_proj,
+            distillation_stop_after=1000
+        ),
+        10: ExperimentSetup(
+            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 2000 images)",
+            student_weights_key='student_proj',
+            projector_weights_key='projector',
+            inference_only=False,
+            distillator_active=True,
+            freeze_distillator=False,
+            use_ema=False,
+            optimizer_setup=optimizer_student_and_proj,
+            distillation_stop_after=2000
+        ),
+        11: ExperimentSetup(
+            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 4000 images)",
+            student_weights_key='student_proj',
+            projector_weights_key='projector',
+            inference_only=False,
+            distillator_active=True,
+            freeze_distillator=False,
+            use_ema=False,
+            optimizer_setup=optimizer_student_and_proj,
+            distillation_stop_after=4000
+        ),
     }
 
 class ExperimentRunner:
@@ -193,7 +227,8 @@ class ExperimentRunner:
                 batch_size=self.config.stream_batch_size,
                 test_dict=test_dict,
                 freeze_distillator=setup.freeze_distillator,
-                use_ce_masking=self.config.use_ce_masking
+                use_ce_masking=self.config.use_ce_masking,
+                distillation_stop_after=setup.distillation_stop_after
             )
             
             results_payload[f"exp_{exp_id}"] = {

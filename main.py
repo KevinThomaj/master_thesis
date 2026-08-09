@@ -54,7 +54,7 @@ def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_m
     print("\n--- STEP 6: Offline Pretraining on preDF (2002-2013) ---")
 
     needs_student_only = any(exp in config.experiments for exp in [1, 3, 4, 8])
-    needs_student_proj = any(exp in config.experiments for exp in [2, 5, 6, 7])
+    needs_student_proj = any(exp in config.experiments for exp in [2, 5, 6, 7, 9, 10, 11])
 
     weights_paths = {}
 

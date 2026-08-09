@@ -383,7 +383,8 @@ class TrainingManager:
                      test_dict=None,
                      window_size=500,
                      freeze_distillator=False,
-                     use_ce_masking=False):
+                     use_ce_masking=False,
+                     distillation_stop_after=None):
         """
         Ottimizzato con DataLoader (I/O asincrono), inferenza batched su GPU,
         e calcolo dell'accuratezza globale.
@@ -539,11 +540,19 @@ class TrainingManager:
 
             # --- 6. TRAINING (ONLINE LEARNING) ---
             model.train()
-            if distillator is not None:
+            
+            current_distillator_active = distillator is not None
+            if current_distillator_active and distillation_stop_after is not None:
+                if total_samples_seen >= distillation_stop_after:
+                    current_distillator_active = False
+
+            if current_distillator_active:
                 if freeze_distillator:
                     distillator.eval()
                 else:
                     distillator.train()
+            elif distillator is not None:
+                distillator.eval()
 
             for epoch in range(num_epochs_per_batch):
                 optimizer.zero_grad()
@@ -560,7 +569,7 @@ class TrainingManager:
                 loss_ce = criterion(logits, batch_labels)
                 total_loss = loss_ce
 
-                if distillator is not None:
+                if current_distillator_active:
                     student_features = student_output['features']
                     loss_distill = distillator(student_features, batch_teacher)
                     total_loss = loss_ce + (distill_weight * loss_distill)

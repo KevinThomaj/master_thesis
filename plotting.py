@@ -159,9 +159,9 @@ def plot_adaptation_speed(results, labels):
     width = 0.25
     
     fig, ax = plt.subplots(figsize=(14, 8))
-    rects1 = ax.bar(x - width, first_window_means, width, label='First 500 Images (Adaptation)', color='skyblue')
-    rects2 = ax.bar(x, after_first_window_means, width, label='After First 500 Images (Stability)', color='lightcoral')
-    rects3 = ax.bar(x + width, final_window_means, width, label='Last 500 Images (Final)', color='lightgreen')
+    rects1 = ax.bar(x - width, first_window_means, width, label='First 500 Images', color='skyblue')
+    rects2 = ax.bar(x, after_first_window_means, width, label='After First 500 Images', color='lightcoral')
+    rects3 = ax.bar(x + width, final_window_means, width, label='Last 500 Images', color='lightgreen')
     
     ax.set_ylabel('Accuracy (%)', fontsize=12)
     ax.set_title('Adaptation Speed: First, After First, and Last 500 Images\n(Mean across all Concepts & Configs)', fontsize=14, fontweight='bold', pad=20)
@@ -195,7 +195,10 @@ def main():
         "exp_5": "green",
         "exp_6": "lime",
         "exp_7": "orange",
-        "exp_8": "purple"
+        "exp_8": "purple",
+        "exp_9": "cyan",
+        "exp_10": "blue",
+        "exp_11": "brown"
     }
     
     labels = {
@@ -206,7 +209,10 @@ def main():
         "exp_5": "Exp 5: S+P(hist) + S+P(stream)",
         "exp_6": "Exp 6: S+P(hist) + S(stream, P frozen)",
         "exp_7": "Exp 7: S+P(hist) + S(stream, no P)",
-        "exp_8": "Exp 8: S(hist) + EMA Teacher"
+        "exp_8": "Exp 8: S(hist) + EMA Teacher",
+        "exp_9": "Exp 9: S+P(hist) + S+P(stream) [Stop at 1k]",
+        "exp_10": "Exp 10: S+P(hist) + S+P(stream) [Stop at 2k]",
+        "exp_11": "Exp 11: S+P(hist) + S+P(stream) [Stop at 4k]"
     }
     
     # Check if results has the new nested config structure or the old flat structure
