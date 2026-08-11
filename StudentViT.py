@@ -7,7 +7,7 @@ class StudentVit(nn.Module):
         self.numberOfClasses = numberOfClasses
         # Small Vision transformer with 22 Millions of parameters
         # Set num_classes=0 to get raw pooled features directly
-        self.student = timm.create_model('vit_small_patch16_224', pretrained=pretrained, num_classes=0)
+        self.student = timm.create_model('vit_tiny_patch16_224', pretrained=pretrained, num_classes=0)
         
         # Dynamically create the classifier head using the backbone's feature dimension
         self.fc = nn.Linear(self.student.num_features, numberOfClasses)

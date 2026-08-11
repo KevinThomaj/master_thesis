@@ -9,7 +9,7 @@ from Config import Config
 from FmowManager import FmowManager
 from TrainingManager import TrainingManager
 from FoundationModel import FoundationModel
-from FeatureDistillation import LinearDistiller, MLPDistiller
+from FeatureDistillation import LinearDistiller, MLPDistiller, RKDDistiller
 from Student import Student
 from StudentViT import StudentVit
 from ExperimentRunner import ExperimentRunner
@@ -114,6 +114,8 @@ def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_m
                 
             if config.projector_type == 'mlp':
                 distillator = MLPDistiller(dimFeatureStudent=dim_student, dimFeatureTeacher=768, hiddenLayerSize=config.mlp_hidden_size).to(device)
+            elif config.projector_type == 'rkd':
+                distillator = RKDDistiller().to(device)
             else:
                 distillator = LinearDistiller(dimFeatureStudent=dim_student, dimFeatureTeacher=768).to(device)
 

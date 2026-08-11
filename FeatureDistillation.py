@@ -64,6 +64,26 @@ class LinearDistiller(Projector):
         return loss
 
 
+class RKDDistiller(Projector):
+    def __init__(self):
+        super().__init__()
+        # No projector needed!
+
+    def forward(self, student_features, teacher_features):
+        # Compute pairwise Euclidean distances (no normalisation)
+        s_dist = torch.cdist(student_features, student_features, p=2)
+        t_dist = torch.cdist(teacher_features, teacher_features, p=2)
+
+        # Compute μ as the average distance in the teacher's batch
+        mu = t_dist.mean()
+
+        # Normalise distances by μ
+        s_dist_norm = s_dist / mu
+        t_dist_norm = t_dist / mu
+
+        # Huber loss on normalised distances
+        loss = F.smooth_l1_loss(s_dist_norm, t_dist_norm)
+        return loss
 class MLPDistiller(Projector):
     def __init__(self,dimFeatureStudent,dimFeatureTeacher,hiddenLayerSize):
         super().__init__()

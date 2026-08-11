@@ -7,7 +7,7 @@ from typing import Optional, Callable, Dict, Any, List
 from Student import Student
 from StudentViT import StudentVit
 from EmaTeacher import EmaTeacher
-from FeatureDistillation import LinearDistiller, MLPDistiller
+from FeatureDistillation import LinearDistiller, MLPDistiller, RKDDistiller
 from Config import Config
 from FmowManager import FmowManager
 from TrainingManager import TrainingManager
@@ -28,10 +28,11 @@ def optimizer_student_only(student, distillator, config):
     return optim.Adam(student.parameters(), lr=config.lr_ft)
 
 def optimizer_student_and_proj(student, distillator, config):
-    return optim.Adam([
-        {'params': student.parameters(), 'lr': config.lr_ft},
-        {'params': distillator.parameters(), 'lr': config.lr_dist_proj}
-    ])
+    params = [{'params': student.parameters(), 'lr': config.lr_ft}]
+    dist_params = list(distillator.parameters())
+    if dist_params:
+        params.append({'params': dist_params, 'lr': config.lr_dist_proj})
+    return optim.Adam(params)
 
 def get_experiment_registry() -> Dict[int, ExperimentSetup]:
     """
@@ -181,11 +182,14 @@ class ExperimentRunner:
         
         if self.config.projector_type == 'mlp':
             d = MLPDistiller(dimFeatureStudent=dim_student, dimFeatureTeacher=768, hiddenLayerSize=self.config.mlp_hidden_size).to(self.device)
+        elif self.config.projector_type == 'rkd':
+            d = RKDDistiller().to(self.device)
         else:
             d = LinearDistiller(dimFeatureStudent=dim_student, dimFeatureTeacher=768).to(self.device)
             
         if weights_key != 'random' and weights_key in weights_paths:
-            d.load_state_dict(torch.load(weights_paths[weights_key], map_location=self.device))
+            if self.config.projector_type != 'rkd':
+                d.load_state_dict(torch.load(weights_paths[weights_key], map_location=self.device))
         return d
 
     def run_experiments(self, experiments: List[int], df_sampled, class_to_idx: Dict[str, int], weights_paths: Dict[str, str], test_dict: Dict) -> Dict[str, Any]:

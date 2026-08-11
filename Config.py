@@ -13,7 +13,7 @@ class Config:
     # Model Configurations
     student_type: str = 'resnet'  # 'resnet' or 'vit'
     ema_alpha: float = 0.99
-    projector_type: str = 'linear'  # 'linear' or 'mlp'
+    projector_type: str = 'linear'  # 'linear', 'mlp', or 'rkd'
     mlp_hidden_size: int = 1024
     
     # Learning Rates
@@ -79,7 +79,7 @@ class Config:
                             help='Type of student model: resnet or vit.')
         parser.add_argument('--ema_alpha', type=float, default=0.99,
                             help='Alpha for EMA Teacher.')
-        parser.add_argument('--projector_type', type=str, default='linear', choices=['linear', 'mlp'],
+        parser.add_argument('--projector_type', type=str, default='linear', choices=['linear', 'mlp', 'rkd'],
                             help='Type of distillator projector.')
         parser.add_argument('--mlp_hidden_size', type=int, default=1024,
                             help='Hidden layer size for MLP projector.')
