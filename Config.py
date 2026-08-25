@@ -6,7 +6,7 @@ import torchvision.transforms as T
 @dataclass
 class Config:
     # Streaming Hyperparameters
-    stream_batch_size: int = 50
+    stream_batch_size: int = 10
     stream_epochs: int = 1
     use_ce_masking: bool = False
     rolling_window_size: int = 1000
@@ -19,7 +19,7 @@ class Config:
     mlp_hidden_size: int = 1024
     
     # Learning Rates
-    lr_ft: float = 1e-3
+    lr_ft: float = 1e-4
     lr_dist_proj: float = 1e-3
     
     # Loss Weights
