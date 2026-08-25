@@ -542,9 +542,12 @@ class TrainingManager:
             # --- 6. TRAINING (ONLINE LEARNING) ---
             model.train()
             
+            # Track samples processed within the current concept/drift
+            samples_in_current_concept = len(concept_metrics[current_concept])
+            
             current_distillator_active = distillator is not None
             if current_distillator_active and distillation_stop_after is not None:
-                if total_samples_seen >= distillation_stop_after:
+                if samples_in_current_concept >= distillation_stop_after:
                     current_distillator_active = False
 
             if current_distillator_active:

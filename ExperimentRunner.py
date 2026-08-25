@@ -121,7 +121,7 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             optimizer_setup=optimizer_student_only
         ),
         9: ExperimentSetup(
-            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 1000 images)",
+            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 2000 images per drift)",
             student_weights_key='student_proj',
             projector_weights_key='projector',
             inference_only=False,
@@ -132,7 +132,7 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             distillation_stop_after=2000
         ),
         10: ExperimentSetup(
-            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 2000 images)",
+            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 4000 images per drift)",
             student_weights_key='student_proj',
             projector_weights_key='projector',
             inference_only=False,
@@ -143,7 +143,7 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             distillation_stop_after=4000
         ),
         11: ExperimentSetup(
-            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 4000 images)",
+            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 8000 images per drift)",
             student_weights_key='student_proj',
             projector_weights_key='projector',
             inference_only=False,
@@ -151,7 +151,7 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             freeze_distillator=False,
             use_ema=False,
             optimizer_setup=optimizer_student_and_proj,
-            distillation_stop_after=6000
+            distillation_stop_after=8000
         ),
     }
 
