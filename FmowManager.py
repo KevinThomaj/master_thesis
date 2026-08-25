@@ -237,21 +237,19 @@ class FmowManager:
         # Shuffle and prepare the extended embeddings for the streaming experiments
         postDF_sampled_final = postDF_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
 
+        import random
         if config_id == 1:
             # Config 1: Modulo grouping
-            dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(top_classes)}
+            dummy_concept_mapping = {cls: f"Concept_{(i % 5)}" for i, cls in enumerate(top_classes)}
         elif config_id == 2:
             # Config 2: Sequential grouping (blocks of 5)
-            dummy_concept_mapping = {cls: (f"Concept_{((i // 5) % 5)}") for i, cls in enumerate(top_classes)}
-        elif config_id == 3:
-            # Config 3: Pseudo-random grouping
-            import random
-            rng = random.Random(42)
+            dummy_concept_mapping = {cls: f"Concept_{(i // 5)}" for i, cls in enumerate(top_classes)}
+        else:
+            # Configs 3 to 12+: Deterministic pseudo-random permutations (5 classes per concept)
+            rng = random.Random(42 + config_id * 100)
             shuffled_classes = top_classes.copy()
             rng.shuffle(shuffled_classes)
-            dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(shuffled_classes)}
-        else:
-            dummy_concept_mapping = {cls: (f"Concept_{(i % 5)}") for i, cls in enumerate(top_classes)}
+            dummy_concept_mapping = {cls: f"Concept_{(i // 5)}" for i, cls in enumerate(shuffled_classes)}
 
         postDF_sampled_final = self.create_concepts(postDF_sampled_final, dummy_concept_mapping)
 

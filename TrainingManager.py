@@ -381,7 +381,8 @@ class TrainingManager:
                      ema=None,
                      inference_only=False,
                      test_dict=None,
-                     window_size=500,
+                     window_size=1000,
+                     adaptation_window_size=500,
                      freeze_distillator=False,
                      use_ce_masking=False,
                      distillation_stop_after=None):
@@ -594,9 +595,9 @@ class TrainingManager:
             
             detailed_metrics[concept] = {
                 'total_accuracy': calc_acc(res_arr),
-                'first_window_accuracy': calc_acc(res_arr[:window_size]),
-                'final_window_accuracy': calc_acc(res_arr[-window_size:]),
-                'after_first_window_accuracy': calc_acc(res_arr[window_size:window_size*2]),
+                'first_window_accuracy': calc_acc(res_arr[:adaptation_window_size]),
+                'after_first_window_accuracy': calc_acc(res_arr[adaptation_window_size:adaptation_window_size*2]),
+                'final_window_accuracy': calc_acc(res_arr[-adaptation_window_size:]),
             }
             # Vectorized cumulative accuracy per concept
             cum_acc = np.cumsum(res_arr) / np.arange(1, len(res_arr) + 1) * 100

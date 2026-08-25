@@ -230,6 +230,8 @@ class ExperimentRunner:
                 num_epochs_per_batch=self.config.stream_epochs,
                 batch_size=self.config.stream_batch_size,
                 test_dict=test_dict,
+                window_size=self.config.rolling_window_size,
+                adaptation_window_size=self.config.adaptation_window_size,
                 freeze_distillator=setup.freeze_distillator,
                 use_ce_masking=self.config.use_ce_masking,
                 distillation_stop_after=setup.distillation_stop_after
