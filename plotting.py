@@ -202,20 +202,18 @@ def plot_adaptation_speed(results, labels, save_path=None):
                 
             if exp_key not in exp_metrics:
                 exp_metrics[exp_key] = {
-                    'first_window_acc_sum': 0.0,
-                    'after_first_window_acc_sum': 0.0,
-                    'final_window_acc_sum': 0.0,
-                    'total_acc_sum': 0.0,
-                    'count': 0
+                    'first_window': [],
+                    'after_first_window': [],
+                    'final_window': [],
+                    'total_acc': []
                 }
                 
             for concept in concept_keys:
                 metrics = det_met[concept]
-                exp_metrics[exp_key]['first_window_acc_sum'] += metrics.get('first_window_accuracy', 0)
-                exp_metrics[exp_key]['after_first_window_acc_sum'] += metrics.get('after_first_window_accuracy', 0)
-                exp_metrics[exp_key]['final_window_acc_sum'] += metrics.get('final_window_accuracy', 0)
-                exp_metrics[exp_key]['total_acc_sum'] += metrics.get('total_accuracy', 0)
-                exp_metrics[exp_key]['count'] += 1
+                exp_metrics[exp_key]['first_window'].append(metrics.get('first_window_accuracy', 0.0))
+                exp_metrics[exp_key]['after_first_window'].append(metrics.get('after_first_window_accuracy', 0.0))
+                exp_metrics[exp_key]['final_window'].append(metrics.get('final_window_accuracy', 0.0))
+                exp_metrics[exp_key]['total_acc'].append(metrics.get('total_accuracy', 0.0))
 
     if not exp_metrics:
         print("No detailed metrics found for adaptation speed plot.")
@@ -224,35 +222,53 @@ def plot_adaptation_speed(results, labels, save_path=None):
     exp_keys_sorted = sorted(list(exp_metrics.keys()), key=get_exp_num)
     
     experiment_names = []
-    first_window_means = []
-    after_first_window_means = []
-    final_window_means = []
-    total_acc_means = []
+    first_window_means, first_window_stds = [], []
+    after_first_window_means, after_first_window_stds = [], []
+    final_window_means, final_window_stds = [], []
+    total_acc_means, total_acc_stds = [], []
     
     for exp_key in exp_keys_sorted:
         metrics = exp_metrics[exp_key]
-        count = metrics['count']
-        if count > 0:
+        if len(metrics['first_window']) > 0:
             experiment_names.append(labels.get(exp_key, exp_key))
-            first_window_means.append(metrics['first_window_acc_sum'] / count)
-            after_first_window_means.append(metrics['after_first_window_acc_sum'] / count)
-            final_window_means.append(metrics['final_window_acc_sum'] / count)
-            total_acc_means.append(metrics['total_acc_sum'] / count)
+            first_window_means.append(float(np.nanmean(metrics['first_window'])))
+            first_window_stds.append(float(np.nanstd(metrics['first_window'])))
+            after_first_window_means.append(float(np.nanmean(metrics['after_first_window'])))
+            after_first_window_stds.append(float(np.nanstd(metrics['after_first_window'])))
+            final_window_means.append(float(np.nanmean(metrics['final_window'])))
+            final_window_stds.append(float(np.nanstd(metrics['final_window'])))
+            total_acc_means.append(float(np.nanmean(metrics['total_acc'])))
+            total_acc_stds.append(float(np.nanstd(metrics['total_acc'])))
+
     x = np.arange(len(experiment_names))
     width = 0.19
     
     fig, ax = plt.subplots(figsize=(17, 8))
-    rects1 = ax.bar(x - 1.5 * width, first_window_means, width, label='Start (First 500 Samples)', color='#2B5C8F', edgecolor='black', linewidth=0.5)
-    rects2 = ax.bar(x - 0.5 * width, after_first_window_means, width, label='Adaptation (500–1000 Samples)', color='#E67E22', edgecolor='black', linewidth=0.5)
-    rects3 = ax.bar(x + 0.5 * width, final_window_means, width, label='End of Concept (Last 500 Samples)', color='#27AE60', edgecolor='black', linewidth=0.5)
-    rects4 = ax.bar(x + 1.5 * width, total_acc_means, width, label='Total Concept Accuracy', color='#8E44AD', edgecolor='black', linewidth=0.5)
+    err_kwargs = {'elinewidth': 1.0, 'ecolor': '#333333', 'capthick': 1.0}
+
+    rects1 = ax.bar(x - 1.5 * width, first_window_means, width, yerr=first_window_stds, capsize=3,
+                    label='Start (First 500 Samples)', color='#2B5C8F', edgecolor='black', linewidth=0.5, error_kw=err_kwargs)
+    rects2 = ax.bar(x - 0.5 * width, after_first_window_means, width, yerr=after_first_window_stds, capsize=3,
+                    label='Adaptation (500–1000 Samples)', color='#E67E22', edgecolor='black', linewidth=0.5, error_kw=err_kwargs)
+    rects3 = ax.bar(x + 0.5 * width, final_window_means, width, yerr=final_window_stds, capsize=3,
+                    label='End of Concept (Last 500 Samples)', color='#27AE60', edgecolor='black', linewidth=0.5, error_kw=err_kwargs)
+    rects4 = ax.bar(x + 1.5 * width, total_acc_means, width, yerr=total_acc_stds, capsize=3,
+                    label='Total Concept Accuracy', color='#8E44AD', edgecolor='black', linewidth=0.5, error_kw=err_kwargs)
     
     ax.set_ylabel('Accuracy (%)', fontsize=12, fontweight='bold')
-    ax.set_title('Adaptation Speed & Concept Progression\n(Mean across all Concepts & Configurations)', fontsize=15, fontweight='bold', pad=15)
+    ax.set_title('Adaptation Speed & Concept Progression\n(Mean ± Std across all Concepts & Configurations)', fontsize=15, fontweight='bold', pad=15)
     ax.set_xticks(x)
     ax.set_xticklabels(experiment_names, rotation=20, ha='right', fontsize=9.5)
     ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=10, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
-    ax.set_ylim(0, 118)
+    
+    # Calculate top y-limit with safety headroom for error bars and labels
+    max_val_with_err = max(
+        max(m + s for m, s in zip(first_window_means, first_window_stds)) if first_window_means else 0,
+        max(m + s for m, s in zip(after_first_window_means, after_first_window_stds)) if after_first_window_means else 0,
+        max(m + s for m, s in zip(final_window_means, final_window_stds)) if final_window_means else 0,
+        max(m + s for m, s in zip(total_acc_means, total_acc_stds)) if total_acc_means else 0,
+    )
+    ax.set_ylim(0, max(115, min(130, max_val_with_err + 14)))
     ax.grid(True, linestyle='--', alpha=0.5, axis='y')
     
     ax.bar_label(rects1, padding=3, fmt='%.1f', fontsize=7.5, fontweight='bold', rotation=45)
@@ -266,7 +282,83 @@ def plot_adaptation_speed(results, labels, save_path=None):
         print(f"Saved: {save_path}")
 
 
-def plot_global_rolling_accuracy(results, labels, colors, save_path=None):
+def compute_smart_ylim(results, mean_curves, drift_points=None, ymin_override=None, ymax_override=None):
+    """
+    Dynamically computes a tight Y-axis zoom range based on the stabilized
+    concept trajectory (ignoring the first ~100 initial prequential samples of each concept).
+    """
+    if ymin_override is not None and ymax_override is not None:
+        return ymin_override, ymax_override
+
+    global_max = float('-inf')
+    segment_mins = []
+    
+    for exp_key, curve in mean_curves.items():
+        if len(curve) == 0:
+            continue
+        c_arr = np.array(curve)
+        global_max = max(global_max, float(np.nanmax(c_arr)))
+        
+        sample_len = len(c_arr)
+        boundaries = [0] + [dp for dp in (drift_points or []) if dp < sample_len] + [sample_len]
+        boundaries = sorted(list(set(boundaries)))
+        
+        for seg_idx in range(len(boundaries) - 1):
+            start_i = boundaries[seg_idx]
+            end_i = boundaries[seg_idx + 1]
+            seg = c_arr[start_i:end_i]
+            
+            # Look at stabilized segment after initial ~100 samples
+            warmup = min(100, max(1, len(seg) // 20))
+            if len(seg) > warmup:
+                valid_seg = seg[warmup:]
+                valid_seg = valid_seg[(~np.isnan(valid_seg)) & (valid_seg > 15.0)]
+                if len(valid_seg) > 0:
+                    segment_mins.append(float(np.min(valid_seg)))
+            elif len(seg) > 0:
+                valid_seg = seg[(~np.isnan(seg)) & (seg > 15.0)]
+                if len(valid_seg) > 0:
+                    segment_mins.append(float(np.min(valid_seg)))
+
+    if segment_mins:
+        stable_min = min(segment_mins)
+        # Tight lower bound: just ~0.8% below the lowest stabilized point, rounded cleanly
+        calc_ymin = max(0.0, np.floor((stable_min - 0.8) * 2) / 2.0)
+    else:
+        calc_ymin = 0.0
+
+    calc_ymax = min(100.0, np.ceil((global_max + 1.2) * 2) / 2.0) if global_max > float('-inf') else 100.0
+
+    if calc_ymin >= calc_ymax:
+        calc_ymin = max(0.0, calc_ymax - 15.0)
+
+    final_ymin = ymin_override if ymin_override is not None else calc_ymin
+    final_ymax = ymax_override if ymax_override is not None else calc_ymax
+    
+    return final_ymin, final_ymax
+
+
+def get_experiment_overall_mean(results, exp_key):
+    """
+    Computes the average overall accuracy across all concepts and configurations
+    for a given experiment key (matching the 4th bar of adaptation speed).
+    """
+    accs = []
+    for config_key, config_data in results.items():
+        if not config_key.startswith('config_'):
+            continue
+        if exp_key in config_data:
+            data = config_data[exp_key]
+            if 'final_accuracy' in data and data['final_accuracy'] > 0:
+                accs.append(data['final_accuracy'])
+            elif 'average_across_concepts' in data.get('history', {}).get('detailed_metrics', {}):
+                accs.append(data['history']['detailed_metrics']['average_across_concepts'])
+    if accs:
+        return float(np.mean(accs))
+    return None
+
+
+def plot_global_rolling_accuracy(results, labels, colors, ymin=None, ymax=None, save_path=None):
     exp_rolling = {}
     drift_points = []
     x_axis = None
@@ -294,37 +386,52 @@ def plot_global_rolling_accuracy(results, labels, colors, save_path=None):
     exp_keys_sorted = sorted(list(exp_rolling.keys()), key=get_exp_num)
     
     fig, ax = plt.subplots(figsize=(17, 8))
-    y_min_all = float('inf')
-    y_max_all = float('-inf')
+    mean_curves = {}
+    sample_len = 0
     
     for exp_key in exp_keys_sorted:
         curves = exp_rolling[exp_key]
         min_len = min(len(c) for c in curves)
         arr = np.array([c[:min_len] for c in curves])
-        x = x_axis[:min_len] if x_axis is not None else np.arange(1, min_len + 1)
-        
         mean_curve = np.mean(arr, axis=0)
-        final_mean = mean_curve[-1]
+        mean_curves[exp_key] = mean_curve
+        sample_len = max(sample_len, min_len)
         
+    x = np.array(x_axis[:sample_len] if x_axis is not None else np.arange(1, sample_len + 1))
+    boundaries = [0] + [dp for dp in drift_points if dp < sample_len] + [sample_len]
+    boundaries = sorted(list(set(boundaries)))
+
+    for exp_key in exp_keys_sorted:
+        mean_curve = mean_curves[exp_key]
+        overall_mean = get_experiment_overall_mean(results, exp_key)
+        if overall_mean is None:
+            overall_mean = mean_curve[-1]
+            
         color = colors.get(exp_key, "black")
         label = labels.get(exp_key, exp_key)
         
-        ax.plot(x, mean_curve, label=f"{label} [{final_mean:.1f}%]", color=color, linewidth=2.4)
-                         
-        y_min_all = min(y_min_all, np.min(mean_curve))
-        y_max_all = max(y_max_all, np.max(mean_curve))
+        for seg_idx in range(len(boundaries) - 1):
+            start_i = boundaries[seg_idx]
+            end_i = boundaries[seg_idx + 1]
+            seg_x = x[start_i:end_i]
+            seg_y = mean_curve[start_i:end_i]
+            seg_label = f"{label} [{overall_mean:.1f}%]" if seg_idx == 0 else None
+            ax.plot(seg_x, seg_y, label=seg_label, color=color, linewidth=2.4)
         
+    y_min_zoomed, y_max_zoomed = compute_smart_ylim(results, mean_curves, drift_points, ymin_override=ymin, ymax_override=ymax)
+
     if drift_points:
+        y_range = max(1.0, y_max_zoomed - y_min_zoomed)
+        x_offset = max(250, int(sample_len * 0.006))
         for idx, dp in enumerate(drift_points):
-            ax.axvline(x=dp, color='#666666', linestyle='--', alpha=0.75, linewidth=1.2)
-            y_bot = max(0, y_min_all - 2) if y_min_all < y_max_all else 0
-            ax.text(dp + 15, y_bot + 1, f'Drift {idx+1}', rotation=90, color='#555555', fontsize=9, fontweight='bold')
+            if dp < sample_len:
+                ax.axvline(x=dp, color='#666666', linestyle='--', alpha=0.75, linewidth=1.2)
+                ax.text(dp + x_offset, y_min_zoomed + y_range * 0.03, f'Drift {idx+1}', rotation=90, color='#555555', fontsize=9, fontweight='bold', va='bottom', ha='left')
             
     ax.set_title("Global Rolling Accuracy (Window = 1000 Images)\n(Averaged across all Configurations)", fontsize=15, fontweight='bold', pad=15)
     ax.set_xlabel("Total Samples Seen in Stream", fontsize=12, fontweight='bold')
     ax.set_ylabel("Rolling Accuracy (%)", fontsize=12, fontweight='bold')
-    if y_min_all < y_max_all:
-        ax.set_ylim(max(0, y_min_all - 3), min(100, y_max_all + 3))
+    ax.set_ylim(y_min_zoomed, y_max_zoomed)
     ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9.5, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
     ax.grid(True, linestyle='--', alpha=0.6)
     
@@ -334,7 +441,7 @@ def plot_global_rolling_accuracy(results, labels, colors, save_path=None):
         print(f"Saved: {save_path}")
 
 
-def plot_global_cumulative_accuracy(results, labels, colors, save_path=None):
+def plot_global_cumulative_accuracy(results, labels, colors, ymin=None, ymax=None, save_path=None):
     exp_cumulative = {}
     drift_points = []
     x_axis = None
@@ -362,37 +469,53 @@ def plot_global_cumulative_accuracy(results, labels, colors, save_path=None):
     exp_keys_sorted = sorted(list(exp_cumulative.keys()), key=get_exp_num)
     
     fig, ax = plt.subplots(figsize=(17, 8))
-    y_min_all = float('inf')
-    y_max_all = float('-inf')
+    mean_curves = {}
+    sample_len = 0
     
     for exp_key in exp_keys_sorted:
         curves = exp_cumulative[exp_key]
         min_len = min(len(c) for c in curves)
         arr = np.array([c[:min_len] for c in curves])
-        x = x_axis[:min_len] if x_axis is not None else np.arange(1, min_len + 1)
-        
         mean_curve = np.mean(arr, axis=0)
-        final_mean = mean_curve[-1]
+        mean_curves[exp_key] = mean_curve
+        sample_len = max(sample_len, min_len)
         
+    x = np.array(x_axis[:sample_len] if x_axis is not None else np.arange(1, sample_len + 1))
+    boundaries = [0] + [dp for dp in drift_points if dp < sample_len] + [sample_len]
+    boundaries = sorted(list(set(boundaries)))
+
+    for exp_key in exp_keys_sorted:
+        mean_curve = mean_curves[exp_key]
+        overall_mean = get_experiment_overall_mean(results, exp_key)
+        if overall_mean is None:
+            overall_mean = mean_curve[-1]
+            
         color = colors.get(exp_key, "black")
         label = labels.get(exp_key, exp_key)
         
-        ax.plot(x, mean_curve, label=f"{label} [{final_mean:.1f}%]", color=color, linewidth=2.4)
-                         
-        y_min_all = min(y_min_all, np.min(mean_curve))
-        y_max_all = max(y_max_all, np.max(mean_curve))
+        # Plot concept segment by segment to eliminate artificial drop lines at drift transitions
+        for seg_idx in range(len(boundaries) - 1):
+            start_i = boundaries[seg_idx]
+            end_i = boundaries[seg_idx + 1]
+            seg_x = x[start_i:end_i]
+            seg_y = mean_curve[start_i:end_i]
+            seg_label = f"{label} [{overall_mean:.1f}%]" if seg_idx == 0 else None
+            ax.plot(seg_x, seg_y, label=seg_label, color=color, linewidth=2.4)
         
+    y_min_zoomed, y_max_zoomed = compute_smart_ylim(results, mean_curves, drift_points, ymin_override=ymin, ymax_override=ymax)
+
     if drift_points:
+        y_range = max(1.0, y_max_zoomed - y_min_zoomed)
+        x_offset = max(250, int(sample_len * 0.006))
         for idx, dp in enumerate(drift_points):
-            ax.axvline(x=dp, color='#666666', linestyle='--', alpha=0.75, linewidth=1.2)
-            y_bot = max(0, y_min_all - 1.5) if y_min_all < y_max_all else 0
-            ax.text(dp + 15, y_bot + 0.8, f'Drift {idx+1}', rotation=90, color='#555555', fontsize=9, fontweight='bold')
+            if dp < sample_len:
+                ax.axvline(x=dp, color='#666666', linestyle='--', alpha=0.75, linewidth=1.2)
+                ax.text(dp + x_offset, y_min_zoomed + y_range * 0.03, f'Drift {idx+1}', rotation=90, color='#555555', fontsize=9, fontweight='bold', va='bottom', ha='left')
             
-    ax.set_title("Global Cumulative Accuracy (Zoomed)\n(Averaged across all Configurations)", fontsize=15, fontweight='bold', pad=15)
+    ax.set_title("Global Cumulative Accuracy\n(Averaged across all Configurations)", fontsize=15, fontweight='bold', pad=15)
     ax.set_xlabel("Total Samples Seen in Stream", fontsize=12, fontweight='bold')
     ax.set_ylabel("Cumulative Accuracy (%)", fontsize=12, fontweight='bold')
-    if y_min_all < y_max_all:
-        ax.set_ylim(max(0, y_min_all - 2), min(100, y_max_all + 2))
+    ax.set_ylim(y_min_zoomed, y_max_zoomed)
     ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9.5, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
     ax.grid(True, linestyle='--', alpha=0.6)
     
@@ -617,6 +740,8 @@ def main():
     parser.add_argument('--show_individual', action='store_true', help="Open interactive GUI windows for each individual config and experiment (warning: generates 100+ windows)")
     parser.add_argument('--save_individual', action='store_true', default=True, help="Save individual config plots to output_dir")
     parser.add_argument('--no_show', action='store_true', help="Skip interactive plt.show() display")
+    parser.add_argument('--ymin', type=float, default=None, help="Custom minimum Y-axis limit for accuracy plots (default: auto-zoomed)")
+    parser.add_argument('--ymax', type=float, default=None, help="Custom maximum Y-axis limit for accuracy plots (default: auto-zoomed)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -698,7 +823,7 @@ def main():
     # 2. GLOBAL AGGREGATED FIGURES (Primary Focus)
     print("\n=======================================================")
     print(" GENERATING GLOBAL SUMMARY FIGURES ACROSS ALL CONFIGS")
-    print("=======================================================\n")
+    print("=======================================================")
     
     global_dir = os.path.join(args.output_dir, "global")
     
@@ -706,10 +831,10 @@ def main():
     plot_adaptation_speed(results, labels, save_path=os.path.join(global_dir, "global_adaptation_speed.png"))
     
     # Task 2: Global Rolling Accuracy (Mean ± Std)
-    plot_global_rolling_accuracy(results, labels, colors, save_path=os.path.join(global_dir, "global_rolling_accuracy.png"))
+    plot_global_rolling_accuracy(results, labels, colors, ymin=args.ymin, ymax=args.ymax, save_path=os.path.join(global_dir, "global_rolling_accuracy.png"))
     
     # Task 3: Global Cumulative Accuracy (Mean ± Std, Zoomed Y-axis)
-    plot_global_cumulative_accuracy(results, labels, colors, save_path=os.path.join(global_dir, "global_cumulative_accuracy.png"))
+    plot_global_cumulative_accuracy(results, labels, colors, ymin=args.ymin, ymax=args.ymax, save_path=os.path.join(global_dir, "global_cumulative_accuracy.png"))
     
     # Task 5: Global Continual Learning Heatmaps (Mean ± Std in each cell)
     plot_global_cl_matrices(results, labels, save_path=os.path.join(global_dir, "global_cl_matrices.png"))
