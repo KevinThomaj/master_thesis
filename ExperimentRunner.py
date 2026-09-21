@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,6 +9,7 @@ from Student import Student
 from StudentViT import StudentVit
 from EmaTeacher import EmaTeacher
 from FeatureDistillation import LinearDistiller, MLPDistiller, RKDDistiller
+from FoundationModel import FoundationModel, FoundationModelLinearProbe
 from Config import Config
 from FmowManager import FmowManager
 from TrainingManager import TrainingManager
@@ -33,6 +35,9 @@ def optimizer_student_and_proj(student, distillator, config):
     if dist_params:
         params.append({'params': dist_params, 'lr': config.lr_dist_proj})
     return optim.Adam(params)
+
+def optimizer_linear_probe(student, distillator, config):
+    return optim.Adam(student.linear_probe.parameters(), lr=config.lr_ft)
 
 def get_experiment_registry() -> Dict[int, ExperimentSetup]:
     """
@@ -111,14 +116,15 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             optimizer_setup=optimizer_student_only
         ),
         8: ExperimentSetup(
-            description="Student finetuned on historic + EMA Teacher finetuning on stream",
-            student_weights_key='student_only',
-            projector_weights_key=None,
+            description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 1000 images per drift)",
+            student_weights_key='student_proj',
+            projector_weights_key='projector',
             inference_only=False,
-            distillator_active=False,
+            distillator_active=True,
             freeze_distillator=False,
-            use_ema=True,
-            optimizer_setup=optimizer_student_only
+            use_ema=False,
+            optimizer_setup=optimizer_student_and_proj,
+            distillation_stop_after=1000
         ),
         9: ExperimentSetup(
             description="(Student + Projector) finetuned on historic + Distillation finetuning on stream (Stops after 2000 images per drift)",
@@ -153,17 +159,42 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
             optimizer_setup=optimizer_student_and_proj,
             distillation_stop_after=8000
         ),
+        12: ExperimentSetup(
+            description="Frozen Extended FM + Linear Probing finetuning on stream",
+            student_weights_key='fm_linear_probe',
+            projector_weights_key=None,
+            inference_only=False,
+            distillator_active=False,
+            freeze_distillator=False,
+            use_ema=False,
+            optimizer_setup=optimizer_linear_probe,
+            distillation_stop_after=None
+        ),
     }
 
 class ExperimentRunner:
-    def __init__(self, device: torch.device, config: Config, manager: FmowManager, training_manager: TrainingManager):
+    def __init__(self, device: torch.device, config: Config, manager: FmowManager, training_manager: TrainingManager, fm_model: Optional[nn.Module] = None):
         self.device = device
         self.config = config
         self.manager = manager
         self.training_manager = training_manager
+        self.fm_model = fm_model
         self.registry = get_experiment_registry()
         
     def _get_student(self, weights_key: str, weights_paths: Dict[str, str], num_classes: int) -> nn.Module:
+        if weights_key == 'fm_linear_probe':
+            if self.fm_model is None:
+                fm = FoundationModel(use_lora=True).to(self.device)
+                if os.path.exists(self.config.fm_weights_path):
+                    fm.load_state_dict(torch.load(self.config.fm_weights_path, map_location=self.device))
+                fm.eval()
+            else:
+                fm = self.fm_model
+            model = FoundationModelLinearProbe(foundation_model=fm, num_classes=num_classes).to(self.device)
+            if weights_key in weights_paths and os.path.exists(weights_paths[weights_key]):
+                model.linear_probe.load_state_dict(torch.load(weights_paths[weights_key], map_location=self.device))
+            return model
+
         if self.config.student_type == 'vit':
             s = StudentVit(numberOfClasses=num_classes, pretrained=False).to(self.device)
         else:

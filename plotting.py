@@ -25,10 +25,11 @@ def get_palette():
         "exp_5":  "#2CA02C", # Forest Green: S+P(hist) + S+P(stream)
         "exp_6":  "#8CD17D", # Light Sage Green: S+P(hist) + S(stream, P frozen)
         "exp_7":  "#FF7F0E", # Vivid Orange: S+P(hist) + S(stream, no P)
-        "exp_8":  "#9467BD", # Purple: S(hist) + EMA Teacher
-        "exp_9":  "#00B4D8", # Sky Blue: S+P(hist) + S+P(stream) [Stop 2k]
+        "exp_8":  "#48CAE4", # Sky Blue: S+P(hist) + S+P(stream) [Stop 1k]
+        "exp_9":  "#00B4D8", # Cerulean: S+P(hist) + S+P(stream) [Stop 2k]
         "exp_10": "#03045E", # Midnight Navy: S+P(hist) + S+P(stream) [Stop 4k]
-        "exp_11": "#8C564B"  # Saddle Brown: S+P(hist) + S+P(stream) [Stop 8k]
+        "exp_11": "#8C564B", # Saddle Brown: S+P(hist) + S+P(stream) [Stop 8k]
+        "exp_12": "#E377C2"  # Orchid Pink: Frozen Ext FM + Online Linear Probe
     }
     
     labels = {
@@ -39,10 +40,11 @@ def get_palette():
         "exp_5":  "Exp 5: S+P(hist) + S+P(stream)",
         "exp_6":  "Exp 6: S+P(hist) + S(stream, P frozen)",
         "exp_7":  "Exp 7: S+P(hist) + S(stream, no P)",
-        "exp_8":  "Exp 8: S(hist) + EMA Teacher",
+        "exp_8":  "Exp 8: S+P(hist) + S+P(stream) [Stop @ 1k/drift]",
         "exp_9":  "Exp 9: S+P(hist) + S+P(stream) [Stop @ 2k/drift]",
         "exp_10": "Exp 10: S+P(hist) + S+P(stream) [Stop @ 4k/drift]",
-        "exp_11": "Exp 11: S+P(hist) + S+P(stream) [Stop @ 8k/drift]"
+        "exp_11": "Exp 11: S+P(hist) + S+P(stream) [Stop @ 8k/drift]",
+        "exp_12": "Exp 12: Frozen Ext FM + Online Linear Probe"
     }
     return colors, labels
 

@@ -53,8 +53,8 @@ def run_fm_pretraining(device, preDF, manager, training_manager, config):
 def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_manager, class_to_idx, config):
     print("\n--- STEP 6: Offline Pretraining on preDF (2002-2013) ---")
 
-    needs_student_only = any(exp in config.experiments for exp in [1, 3, 4, 8])
-    needs_student_proj = any(exp in config.experiments for exp in [2, 5, 6, 7, 9, 10, 11])
+    needs_student_only = any(exp in config.experiments for exp in [1, 3, 4])
+    needs_student_proj = any(exp in config.experiments for exp in [2, 5, 6, 7, 8, 9, 10, 11])
 
     weights_paths = {}
 
@@ -238,7 +238,7 @@ def main():
         # But prepare_streaming_data_and_eval does extraction. Actually, extraction is independent of concept grouping.
         # So we could extract once, but to keep it simple we just let it run or rely on the disk cache.
 
-        runner = ExperimentRunner(device, config, manager, training_manager)
+        runner = ExperimentRunner(device, config, manager, training_manager, fm_model=fm_model)
         conf_results = runner.run_experiments(
             experiments=config.experiments,
             df_sampled=postDF_sampled_conf,

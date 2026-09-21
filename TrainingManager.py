@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 
 from FmowTorchDataset import FmowTorchDataset
+from LinearProbe import LinearProbe
 
 
 class TrainingManager:
@@ -649,7 +650,7 @@ class TrainingManager:
         
         embed_dim = X_train.shape[1]
         
-        classifier = nn.Linear(embed_dim, num_classes).to(self.device)
+        classifier = LinearProbe(embed_dim, num_classes).to(self.device)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(classifier.parameters(), lr=lr)
         

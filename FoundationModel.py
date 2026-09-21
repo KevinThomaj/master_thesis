@@ -4,6 +4,7 @@ import timm
 import copy
 from peft import LoraConfig, get_peft_model
 from lightly.models.modules import DINOProjectionHead
+from LinearProbe import LinearProbe
 
 
 class FoundationModel(nn.Module):
@@ -112,3 +113,35 @@ class DINOPretrainWrapper(nn.Module):
         features = self.teacher_backbone(x)
         projections = self.teacher_head(features)
         return projections
+
+
+class FoundationModelLinearProbe(nn.Module):
+    """
+    Wraps a frozen Foundation Model with a trainable Linear classification head
+    for online streaming linear probing.
+    """
+    def __init__(self, foundation_model: nn.Module, num_classes: int = 25):
+        super().__init__()
+        self.foundation_model = foundation_model
+        # Freeze entire foundation model backbone
+        for p in self.foundation_model.parameters():
+            p.requires_grad = False
+        self.foundation_model.eval()
+
+        embed_dim = getattr(foundation_model, 'embed_dim', 768)
+        self.linear_probe = LinearProbe(input_dim=embed_dim, num_classes=num_classes)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        # Ensure foundation model backbone strictly remains in eval mode
+        self.foundation_model.eval()
+        return self
+
+    def forward(self, x):
+        if x.dim() == 4:
+            with torch.no_grad():
+                features = self.foundation_model(x)
+        else:
+            features = x
+        logits = self.linear_probe(features)
+        return {'features': features, 'logits': logits}
