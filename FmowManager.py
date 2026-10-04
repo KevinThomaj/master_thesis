@@ -233,23 +233,50 @@ class FmowManager:
 
         return preDF_sampled, postDF_sampled, top_classes, class_to_idx, preDF
 
+    @staticmethod
+    def _build_concept_mapping(top_classes, config_id, classes_per_concept=5):
+        """
+        Deterministically builds the class -> concept mapping for a configuration ID.
+        Guarantees that every configuration ID in 1..config_id yields a distinct
+        ordered partition (the stream order follows Concept_0, Concept_1, ...),
+        so that each configuration is an independent sample for mean/std estimates.
+        """
+        import random
+
+        def signature(mapping):
+            groups = {}
+            for cls, concept in mapping.items():
+                groups.setdefault(concept, set()).add(cls)
+            return tuple(frozenset(groups[c]) for c in sorted(groups))
+
+        seen = set()
+        mapping = None
+        for cid in range(1, config_id + 1):
+            if cid == 1:
+                # Config 1: Modulo grouping
+                mapping = {cls: f"Concept_{(i % classes_per_concept)}" for i, cls in enumerate(top_classes)}
+            elif cid == 2:
+                # Config 2: Sequential grouping (blocks of 5)
+                mapping = {cls: f"Concept_{(i // classes_per_concept)}" for i, cls in enumerate(top_classes)}
+            else:
+                # Configs 3+: Deterministic pseudo-random permutations (5 classes per concept)
+                attempt = 0
+                while True:
+                    rng = random.Random(42 + cid * 100 + attempt * 100003)
+                    shuffled_classes = top_classes.copy()
+                    rng.shuffle(shuffled_classes)
+                    mapping = {cls: f"Concept_{(i // classes_per_concept)}" for i, cls in enumerate(shuffled_classes)}
+                    if signature(mapping) not in seen:
+                        break
+                    attempt += 1
+            seen.add(signature(mapping))
+        return mapping
+
     def prepare_streaming_concepts(self, postDF_sampled, top_classes, test_size_per_concept=100, config_id=1, recurrent_concept=None):
         # Shuffle and prepare the extended embeddings for the streaming experiments
         postDF_sampled_final = postDF_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
 
-        import random
-        if config_id == 1:
-            # Config 1: Modulo grouping
-            dummy_concept_mapping = {cls: f"Concept_{(i % 5)}" for i, cls in enumerate(top_classes)}
-        elif config_id == 2:
-            # Config 2: Sequential grouping (blocks of 5)
-            dummy_concept_mapping = {cls: f"Concept_{(i // 5)}" for i, cls in enumerate(top_classes)}
-        else:
-            # Configs 3 to 12+: Deterministic pseudo-random permutations (5 classes per concept)
-            rng = random.Random(42 + config_id * 100)
-            shuffled_classes = top_classes.copy()
-            rng.shuffle(shuffled_classes)
-            dummy_concept_mapping = {cls: f"Concept_{(i // 5)}" for i, cls in enumerate(shuffled_classes)}
+        dummy_concept_mapping = self._build_concept_mapping(top_classes, config_id)
 
         postDF_sampled_final = self.create_concepts(postDF_sampled_final, dummy_concept_mapping)
 

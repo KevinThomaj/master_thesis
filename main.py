@@ -143,7 +143,7 @@ def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_m
     return weights_paths
 
 
-def prepare_streaming_data_and_eval(device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config, top_25_classes,config_id):
+def extract_streaming_embeddings_and_eval(device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config):
     print("\n--- STEP 7a: Extracting Embeddings for Raw Foundation Model ---")
     fm_model_raw = FoundationModel(use_lora=False).to(device)
     fm_model_raw.eval()
@@ -182,7 +182,11 @@ def prepare_streaming_data_and_eval(device, postDF_sampled, fm_model, manager, t
     print(f" Raw FM Accuracy:      {acc_raw * 100:.2f}%")
     print(f" Extended FM Accuracy: {acc_ext * 100:.2f}%")
     print("=======================================================\n")
-    
+
+    return postDF_ext_embed
+
+
+def prepare_streaming_data(postDF_ext_embed, manager, config, top_25_classes, config_id):
     # Let manager handle the pandas slicing
     stream_df, test_dict = manager.prepare_streaming_concepts(
         postDF_sampled=postDF_ext_embed,
@@ -195,12 +199,14 @@ def prepare_streaming_data_and_eval(device, postDF_sampled, fm_model, manager, t
     return stream_df, test_dict
 
 
-def save_experiment_results(results_payload):
-    print("\n--- STEP 8: Exporting Results for Local Plotting ---")
+def save_experiment_results(results_payload, verbose=True):
     output_file = "experiment_results.json"
     with open(output_file, "w") as f:
         json.dump(results_payload, f, indent=4)
 
+    if not verbose:
+        return
+    print("\n--- STEP 8: Exporting Results for Local Plotting ---")
     print(f"Data successfully saved to {output_file}.")
     print("Download this file to your local machine to generate the matplotlib charts without server X11 errors.")
 
@@ -225,20 +231,21 @@ def main():
     )
 
     results_payload = {}
-    
-    for conf_id in config.concept_configurations:
-        print(f"\n{'='*25} RUNNING CONCEPT CONFIGURATION {conf_id} {'='*25}")
-        postDF_sampled_conf, test_dict = prepare_streaming_data_and_eval(
-            device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config, top_25_classes, conf_id
-        )
-        #TODO Avoid calculating embeddding and linear probing multiple times
-        # Cleanup FM after embeddings extraction to free VRAM for the streaming phase if needed
-        # We'll just do it after the first config or do it inside prepare_streaming_data_and_eval?
-        # Note: fm_model is needed for each configuration's embedding extraction unless we extract once.
-        # But prepare_streaming_data_and_eval does extraction. Actually, extraction is independent of concept grouping.
-        # So we could extract once, but to keep it simple we just let it run or rely on the disk cache.
 
-        runner = ExperimentRunner(device, config, manager, training_manager, fm_model=fm_model)
+    # Embeddings + offline linear probing are independent of the concept grouping: compute once.
+    postDF_ext_embed = extract_streaming_embeddings_and_eval(
+        device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config
+    )
+
+    runner = ExperimentRunner(device, config, manager, training_manager, fm_model=fm_model)
+    n_confs = len(config.concept_configurations)
+
+    for i, conf_id in enumerate(config.concept_configurations, start=1):
+        print(f"\n{'='*25} RUNNING CONCEPT CONFIGURATION {conf_id} ({i}/{n_confs}) {'='*25}")
+        postDF_sampled_conf, test_dict = prepare_streaming_data(
+            postDF_ext_embed, manager, config, top_25_classes, conf_id
+        )
+
         conf_results = runner.run_experiments(
             experiments=config.experiments,
             df_sampled=postDF_sampled_conf,
@@ -247,6 +254,9 @@ def main():
             test_dict=test_dict
         )
         results_payload[f"config_{conf_id}"] = conf_results
+
+        # Checkpoint after every configuration so long runs are not lost on failure
+        save_experiment_results(results_payload, verbose=False)
 
     # Cleanup FM
     del fm_model

@@ -27,7 +27,7 @@ class Config:
     
     # Experiments
     experiments: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
-    concept_configurations: List[int] = field(default_factory=lambda: list(range(1, 13)))
+    concept_configurations: List[int] = field(default_factory=lambda: list(range(1, 31)))
     recurrent_concept: str = None
     
     # Data params
@@ -75,8 +75,10 @@ class Config:
                             help='Weight lambda for the distillation loss component.')
         parser.add_argument('--experiments', nargs='+', type=int, default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
                             help='List of experiments to run. Default is all.')
-        parser.add_argument('--concept_configurations', nargs='+', type=int, default=list(range(1, 13)),
-                            help='List of concept configurations to test. Default is 1 to 12.')
+        parser.add_argument('--concept_configurations', nargs='+', type=int, default=None,
+                            help='Explicit list of concept configuration IDs to test (overrides --num_configurations).')
+        parser.add_argument('--num_configurations', type=int, default=30,
+                            help='Run concept configurations 1..N. Default is 30.')
         parser.add_argument('--rolling_window_size', type=int, default=1000,
                             help='Window size for rolling accuracy calculation.')
         parser.add_argument('--adaptation_window_size', type=int, default=500,
@@ -95,6 +97,10 @@ class Config:
                             help='The name of a concept to repeat at the end of the stream (e.g., Concept_1).')
 
         args = parser.parse_args()
+
+        concept_configurations = (args.concept_configurations
+                                  if args.concept_configurations is not None
+                                  else list(range(1, args.num_configurations + 1)))
         
         return Config(
             stream_batch_size=args.stream_batch_size,
@@ -103,7 +109,7 @@ class Config:
             lr_dist_proj=args.lr_dist_proj,
             distill_weight=args.distill_weight,
             experiments=args.experiments,
-            concept_configurations=args.concept_configurations,
+            concept_configurations=concept_configurations,
             rolling_window_size=args.rolling_window_size,
             adaptation_window_size=args.adaptation_window_size,
             student_type=args.student_type,
