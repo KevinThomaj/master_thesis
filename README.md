@@ -134,7 +134,6 @@ Experiments are defined in the registry in `src/ExperimentRunner.py`. `S(Hist)` 
 | 11 | `S+P(Hist)` | as 5, distillation stops after | 8,000 |
 | 12 | – | frozen adapted teacher + linear probe trained on the stream (reference) | – |
 
-> **Note:** the thesis numbers the budget experiments differently. Thesis Exp 8, 9 and 10 (budgets 2,000 / 4,000 / 8,000) correspond to IDs **9, 10 and 11** here.
 
 To add an experiment, add a new `ExperimentSetup` entry to `get_experiment_registry()`. Nothing else needs to change.
 
