@@ -46,7 +46,7 @@ pip install -r requirements.txt
 python src/main.py --student_type resnet --projector_type linear --num_configurations 12
 ```
 
-The first run downloads the dataset (tens of GB) and prepares the models, which takes a while. Everything expensive is saved to disk, so later runs start straight from the experiments.
+The first run downloads the dataset (50 GB) and prepares the models, which takes a while. Everything expensive is saved to disk, so later runs start straight from the experiments.
 
 **3. Plot the results:**
 
