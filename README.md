@@ -1,170 +1,198 @@
-# Continual Learning & Knowledge Distillation for Earth Observation
+# Streaming Feature Distillation from a Foundation Model to an Edge Learner
 
-This repository contains the experimental framework for studying whether **feature distillation from a ground-based Foundation Model can accelerate on-orbit concept adaptation and mitigate catastrophic forgetting** in lightweight satellite models.
+Code for the MSc thesis on **knowledge transfer from a centralised Slow Learner (a foundation model) to a resource-constrained Fast Learner that learns online from a non-stationary stream**, with a limited communication budget between the two.
 
-The benchmark is built on the **WILDS-FMoW (Functional Map of the World)** dataset, capturing real-world geographic, seasonal, and semantic distribution shifts over time.
+The Fast Learner (a small student network) learns from a stream of satellite images with concept drift. While it learns, it aligns its embedding with the embedding of a frozen foundation model (the teacher) through a small trainable **projector**. The teacher is queried only on a limited number of samples per concept. The projector is used only during training, so the deployed student is exactly as large and as fast as one trained without distillation.
 
----
+The application is onboard Earth Observation, simulated with [WILDS-fMoW](https://wilds.stanford.edu/datasets/#fmow):
 
-## 📌 Project Overview & Requirements
+| Component | Implementation |
+|---|---|
+| Teacher (Slow Learner) | DINOv2 ViT-B/14, adapted to satellite imagery with LoRA + DINO continued pre-training on 2002–2013 images |
+| Students (Fast Learner) | ResNet-18 or ViT-tiny, both starting from ImageNet weights |
+| Projectors | Linear or MLP (one hidden layer) |
+| Historical data | 2002–2013, 25 classes × 2,200 images |
+| Stream | 2016–2017, 25 classes × 2,300 images, split into 5 concepts of 5 new classes each |
 
-* **Dataset:** [WILDS-FMoW](https://wilds.stanford.edu/datasets/#fmow) (~500K RGB satellite images, 224×224 resolution, 62 original categories).
-* **Temporal Drift & Data Split:**
-  * **Historical Phase (Pre-training):** 2002 – 2013.
-  * **Temporal Gap:** 2014 – 2015. Excluded from training to enforce natural geographic and semantic drift (e.g., massive expansion of agricultural land, changes in satellite sensor resolutions, and regional demographic shifts in Asia and Africa).
-  * **Online Streaming Phase:** 2016 – 2017.
-* **Class Selection & Balancing:**
-  * **25 stable classes** identified from the most populated categories in the historical phase and maintained throughout streaming.
-  * **Historical data:** 2,200 images per class (55,000 total historical samples).
-  * **Streaming data:** 2,300 images per class (57,500 total streaming samples).
-* **Streaming Protocol (Class-Incremental Settings):**
-  * The 25 classes are partitioned into **5 sequential concepts** (5 classes per concept).
-  * Evaluated across **30 independent deterministic concept configurations** (permutations) for robust statistical confidence intervals.
-  * For each concept, **100 images** are held out as a test set to evaluate backward and forward transfer in the **Continual Learning Matrix**.
+Years 2014–2015 are discarded, so the student meets an abrupt shift when the stream starts.
 
 ---
 
-## 🛰️ Architecture & Distillation
+## Repository structure
 
-### 1. Ground Foundation Model (Extended Pre-training)
-* **Backbone:** Meta's **DINOv2** Vision Transformer (`vit_base_patch14_dinov2.lvd142m`, 768-dim embeddings).
-* **Training Data:** All images from 2002–2013 (~140K images across all 62 classes, completely unsupervised).
-* **Adaptation:** Self-Supervised Learning using the original **DINO loss** with multi-crop augmentations (2 global crops + 6 local views). The transformer backbone is frozen, and **Low-Rank Adaptation (LoRA)** is applied to the Query, Key, Value (`qkv`), and Output Projection (`proj`) attention matrices.
+All code is in `src/`: `main.py` runs the pipeline and `plotting.py` makes the figures. The other modules hold the configuration, the data, the models, the projectors (`FeatureDistillation.py`), training and the experiment registry (`ExperimentRunner.py`).
 
-### 2. Satellite Student Model (On-Orbit Model)
-* **Backbone:** Lightweight **ResNet-18** (~11M parameters) or **ViT-Tiny** (`vit_tiny_patch16_224`, ~5.7M parameters).
-* **Historical Warm-up:** Pre-trained on the historical 25 classes (2002–2013) either with supervised cross-entropy or jointly with feature distillation.
-
-### 3. Feature Distillation Projectors
-Aligns the student's penultimate feature representation with the Foundation Model's embedding space:
-* **Linear Projector:** Single linear layer mapping student dimensions to 768 with Mean Squared Error (MSE) loss.
-* **MLP Projector:** 2-layer MLP (Linear → ReLU → Linear, hidden dimension 1024) with MSE loss.
-* **Relational Knowledge Distillation (RKD):** Parameter-free distillation using Huber loss on normalized pairwise Euclidean distance matrices.
+Data, weights, embeddings and results are generated in the repository root and are not tracked by git. **Always run commands from the repository root**, since all paths are relative to it.
 
 ---
 
-## 🧪 Experiments Matrix
+## Installation
 
-| Exp ID | Pre-training Setup | Streaming Setup | Objective |
-| :---: | :--- | :--- | :--- |
-| **Exp 1** | Student (supervised) | Pure inference (no adaptation) | Baseline zero-shot performance and drift decay |
-| **Exp 2** | Student + Projector (distilled) | Pure inference (no adaptation) | Evaluates if distillation warm-up enhances robustness |
-| **Exp 3** | Student (supervised) | Student fine-tuning | Standard online supervised fine-tuning |
-| **Exp 4** | Student (supervised) | (Student + Projector) fine-tuning | Online streaming distillation with randomly initialized projector |
-| **Exp 5** | Student + Projector (distilled) | (Student + Projector) fine-tuning | Full continuous feature distillation on stream |
-| **Exp 6** | Student + Projector (distilled) | Student fine-tuning, Projector frozen | Streaming distillation with fixed representation mapping |
-| **Exp 7** | Student + Projector (distilled) | Student fine-tuning, No projector | Supervised online fine-tuning from distilled initialization |
-| **Exp 8** | Student + Projector (distilled) | Distillation stops after 1,000 images/concept | Resource budget analysis |
-| **Exp 9** | Student + Projector (distilled) | Distillation stops after 2,000 images/concept | Resource budget analysis |
-| **Exp 10** | Student + Projector (distilled) | Distillation stops after 4,000 images/concept | Resource budget analysis |
-| **Exp 11** | Student + Projector (distilled) | Distillation stops after 8,000 images/concept | Resource budget analysis |
-| **Exp 12** | Frozen Foundation Model | Online Linear Probing on stream | Upper-bound feature representation benchmark |
-
----
-
-## ⚙️ Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/your-username/master_thesis.git
-   cd master_thesis
-   ```
-
-2. **Set up a Python virtual environment (Python 3.10+ recommended):**
-   ```bash
-   python -m venv .venv
-   # Windows:
-   .venv\Scripts\activate
-   # Linux / macOS:
-   source .venv/bin/activate
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
----
-
-## 🚀 How to Run Experiments
-
-The main pipeline downloads WILDS-FMoW data automatically into `./data`, manages checkpointing, runs offline feature extraction, and executes streaming experiments.
-
-### Basic Run (All Experiments on 30 Configurations)
-```bash
-python main.py
-```
-
-### Targeted Execution
-Run specific experiments (e.g., Exps 1, 3, 5, 7) on 3 concept configurations using ResNet-18 and Linear distillation:
-```bash
-python main.py --experiments 1 3 5 7 --num_configurations 3 --student_type resnet --projector_type linear
-```
-
-### Using ViT-Tiny Student with MLP Distillation:
-```bash
-python main.py --experiments 1 3 5 --student_type vit --projector_type mlp --mlp_hidden_size 1024
-```
-
-### CLI Arguments Reference
-
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| `--experiments` | `1 2 3 ... 12` | List of experiment IDs to execute |
-| `--num_configurations` | `30` | Number of concept configurations to run (1..N) |
-| `--concept_configurations` | `None` | Explicit list of configuration IDs (e.g., `--concept_configurations 1 2 5`) |
-| `--student_type` | `resnet` | Student architecture: `resnet` (ResNet-18) or `vit` (ViT-Tiny) |
-| `--projector_type` | `linear` | Distillation projector: `linear`, `mlp`, or `rkd` |
-| `--mlp_hidden_size` | `1024` | Hidden dimension for MLP projector |
-| `--stream_batch_size` | `10` | Mini-batch size during the streaming phase |
-| `--stream_epochs` | `1` | Training epochs per incoming streaming batch |
-| `--lr_ft` | `1e-4` | Learning rate for student fine-tuning |
-| `--lr_dist_proj` | `1e-3` | Learning rate for feature distillation projector |
-| `--distill_weight` | `1.0` | Scalar weight $\lambda$ for feature distillation loss |
-| `--rolling_window_size` | `1000` | Window size for rolling accuracy computation |
-| `--adaptation_window_size` | `500` | Window size for concept adaptation speed analysis |
-
-*Results are automatically saved and checkpointed after each configuration in `experiment_results.json`.*
-
----
-
-## 📊 Generating Visualizations and Metrics
-
-Once `experiment_results.json` is generated, run the plotting suite:
+Python 3.10+ and a CUDA GPU are recommended. The thesis results were obtained on a single NVIDIA RTX 4000 SFF Ada (20 GB).
 
 ```bash
-python plotting.py --results experiment_results.json --output_dir ./plots --no_show
+pip install -r requirements.txt
 ```
 
-### Generated Figures in `./plots/global/`:
-1. **`global_adaptation_speed.png`**: 4-bar breakdown quantifying adaptation speed across all concepts:
-   * **Start:** Accuracy in the first 500 samples of a concept.
-   * **Adaptation:** Accuracy between samples 500 and 1,000.
-   * **End of Concept:** Accuracy in the last 500 samples.
-   * **Total:** Overall accuracy throughout the concept.
-2. **`global_rolling_accuracy.png`**: Mean rolling accuracy trajectory (window = 1,000 samples) with drift boundary markers.
-3. **`global_cumulative_accuracy.png`**: Cumulative accuracy curves with per-concept segmentation.
-4. **`global_cl_matrices.png`**: Continual Learning heatmaps showing forward transfer, learning, and backward transfer (Mean ± Std in each cell).
-5. **`global_forgetting.png`**: Immediate accuracy after learning vs final accuracy at the end of stream.
-6. **`detailed_metrics_global_summary.csv`**: Aggregated metrics table with mean and standard deviation.
+For GPU support, install the CUDA build of PyTorch first, following [pytorch.org](https://pytorch.org/get-started/locally/), then run the command above.
+
+WILDS-fMoW is downloaded automatically on the first run into `./data/fmow_v1.1/`. The download is large (tens of GB).
 
 ---
 
-## 📂 Repository Structure
+## Usage
 
+```bash
+python src/main.py [options]
 ```
-master_thesis/
-├── Config.py               # Hyperparameter and configuration management
-├── Student.py              # ResNet-18 student wrapper with intermediate feature extraction
-├── StudentViT.py           # ViT-Tiny student alternative
-├── FoundationModel.py      # DINOv2 ViT-Base with LoRA adapters and SSL pre-training wrapper
-├── FeatureDistillation.py  # Linear, MLP, and Relational Knowledge Distillation modules
-├── FmowManager.py          # Dataset download, temporal splits, and concept scheduling
-├── FmowTorchDataset.py     # PyTorch Dataset supporting on-the-fly caching & teacher embeddings
-├── TrainingManager.py      # DINO pre-training, offline student warm-up, and online streaming loops
-├── ExperimentRunner.py     # Registry and execution engine for Experiments 1..12
-├── LinearProbe.py          # Linear classification head for representation evaluation
-├── main.py                 # Primary entry point orchestrating end-to-end execution
-├── plotting.py             # Visualization and statistical analysis suite
-└── requirements.txt        # Python package dependencies
+
+The pipeline runs these stages:
+
+1. Load WILDS-fMoW, split it into historical (2002–2013) and streaming (2016–2017) periods, select and balance the 25 classes.
+2. Adapt the teacher with LoRA on all historical images (**25 epochs, the longest step**), or load the saved weights.
+3. Pre-train the students needed by the selected experiments on historical data, with or without the projector.
+4. Compute the teacher embeddings of the stream and compare the off-the-shelf and adapted teacher by linear probing.
+5. For each class partition, build the stream and run every selected experiment.
+6. Save the results to `experiment_results.json`.
+
+Stages 2–4 are cached on disk (see [Cached files](#cached-files)), so later runs go straight to the streaming experiments.
+
+### Examples
+
+Unlimited-access study, ResNet-18 with the linear projector, 12 class partitions:
+
+```bash
+python src/main.py --student_type resnet --projector_type linear \
+                   --experiments 1 2 3 4 5 6 7 --num_configurations 12
 ```
+
+Same study for ViT-tiny with the MLP projector (512 hidden units, as in the thesis):
+
+```bash
+python src/main.py --student_type vit --projector_type mlp --mlp_hidden_size 512 \
+                   --experiments 1 2 3 4 5 6 7 --num_configurations 12
+```
+
+Communication-budget study (ViT-tiny, linear projector):
+
+```bash
+python src/main.py --student_type vit --projector_type linear \
+                   --experiments 5 7 9 10 11 --num_configurations 12
+```
+
+Only specific class partitions:
+
+```bash
+python src/main.py --experiments 3 5 --concept_configurations 1 4 7
+```
+
+### Main options
+
+| Option | Default | Description |
+|---|---|---|
+| `--student_type` | `resnet` | `resnet` (ResNet-18) or `vit` (ViT-tiny) |
+| `--projector_type` | `linear` | `linear`, `mlp`, or `rkd` (experimental, not used in the thesis) |
+| `--mlp_hidden_size` | `1024` | Hidden width of the MLP projector (the thesis uses `512`) |
+| `--experiments` | `1 … 12` | Experiment IDs to run (see below) |
+| `--num_configurations` | `30` | Run class partitions `1 … N` (the thesis uses `12`) |
+| `--concept_configurations` | – | Explicit list of partition IDs; overrides `--num_configurations` |
+| `--stream_batch_size` | `10` | Buffer size on the stream |
+| `--stream_epochs` | `1` | Passes per buffer (1 = single pass) |
+| `--lr_ft` | `1e-4` | Student learning rate on the stream |
+| `--lr_dist_proj` | `1e-3` | Projector learning rate on the stream |
+| `--distill_weight` | `1.0` | Weight λ of the distillation loss |
+| `--rolling_window_size` | `1000` | Window for the rolling accuracy |
+| `--adaptation_window_size` | `500` | Window after each drift for the adaptation accuracy |
+| `--recurrent_concept` | – | Repeat a concept at the end of the stream, e.g. `Concept_1` |
+
+### Plotting
+
+The experiments write no figures. Once a run has finished, generate the plots from `experiment_results.json`:
+
+```bash
+python src/plotting.py
+```
+
+---
+
+## Experiments
+
+Experiments are defined in the registry in `src/ExperimentRunner.py`. `S(Hist)` means the student was pre-trained on historical data with cross-entropy only; `S+P(Hist)` means it was pre-trained together with the projector (cross-entropy + distillation).
+
+| ID | Before deployment | On the stream | Teacher budget per concept |
+|---|---|---|---|
+| 1 | `S(Hist)` | inference only | – |
+| 2 | `S+P(Hist)` | inference only | – |
+| 3 | `S(Hist)` | fine-tuning, labels only (**main baseline**) | 0 |
+| 4 | `S(Hist)` | fine-tuning + distillation, new projector | all samples |
+| 5 | `S+P(Hist)` | fine-tuning + distillation, pre-trained projector (**full method**) | all samples |
+| 6 | `S+P(Hist)` | as 5, but projector frozen | all samples |
+| 7 | `S+P(Hist)` | fine-tuning, labels only | 0 |
+| 8 | `S+P(Hist)` | as 5, distillation stops after | 1,000 |
+| 9 | `S+P(Hist)` | as 5, distillation stops after | 2,000 |
+| 10 | `S+P(Hist)` | as 5, distillation stops after | 4,000 |
+| 11 | `S+P(Hist)` | as 5, distillation stops after | 8,000 |
+| 12 | – | frozen adapted teacher + linear probe trained on the stream (reference) | – |
+
+> **Note:** the thesis numbers the budget experiments differently. Thesis Exp 8, 9 and 10 (budgets 2,000 / 4,000 / 8,000) correspond to IDs **9, 10 and 11** here.
+
+To add an experiment, add a new `ExperimentSetup` entry to `get_experiment_registry()`. Nothing else needs to change.
+
+Each projector takes the student and teacher embeddings and **returns the distillation loss directly** (MSE averaged over samples and dimensions):
+
+```python
+distiller = LinearDistiller(dimFeatureStudent=512, dimFeatureTeacher=768)
+loss = ce_loss + distill_weight * distiller(student_features, teacher_features)
+```
+
+---
+
+## Outputs
+
+`experiment_results.json` has one entry per class partition and per experiment:
+
+```json
+{
+  "config_1": {
+    "exp_5": {
+      "final_accuracy": ...,
+      "history": { ... },
+      "cl_matrix": [[ ... ]]
+    }
+  }
+}
+```
+
+- `final_accuracy`: prequential accuracy over the whole stream.
+- `history`: cumulative, rolling and per-concept adaptation accuracies.
+- `cl_matrix`: accuracy matrix, where entry `[i][j]` is the accuracy on concept `j` after learning concept `i`.
+
+The file is rewritten after every partition, so an interrupted run keeps all completed partitions. **It is overwritten by each new run**, so rename it before launching another study.
+
+---
+
+## Cached files
+
+Expensive stages are saved in the repository root and reused on later runs:
+
+| File | Content |
+|---|---|
+| `pretrained_dinov2_lora.pth` | Adapted teacher |
+| `pretrained_student_weights_<student>.pth` | Student pre-trained with cross-entropy only |
+| `pretrained_student_proj_weights_<student>_<projector>.pth` | Student pre-trained with the projector |
+| `pretrained_projector_weights_<student>_<projector>.pth` | Projector pre-trained with the student |
+| `dino_preDF` | Teacher embeddings of the historical images (Parquet) |
+| `dino` | Adapted-teacher embeddings of the stream (Parquet) |
+| `dino_noExt` | Off-the-shelf DINOv2 embeddings of the stream (Parquet) |
+
+Because the teacher is frozen during the stream, its embeddings are computed once and stored. A "query" to the teacher in the streaming loop is a lookup of the stored embedding, and the budget decides whether that embedding is used.
+
+If you retrain the teacher, **delete the three embedding files** as well, since they are not invalidated automatically. Delete a `.pth` file to force the corresponding model to be retrained.
+
+---
+
+## Reproducibility
+
+- Class sampling, splits, stream order and class partitions use fixed seeds, so the same command produces the same data.
+- Partition 1 groups classes by index modulo 5, partition 2 groups consecutive classes, and partitions 3+ are seeded random permutations, guaranteed to be distinct from each other.
+- Thesis results are averages over partitions 1–12.
