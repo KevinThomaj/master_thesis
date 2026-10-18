@@ -23,6 +23,14 @@ from LinearProbe import LinearProbe
 
 
 class TrainingManager:
+    """
+    Orchestrates all model training workflows:
+    1. Extended Self-Supervised Pre-training of Foundation Model (DINOv2 + LoRA) via DINO SSL.
+    2. Supervised and Distillation-Assisted Offline Pre-training of Student backbones.
+    3. Online Streaming Continual Learning with Prequential Evaluation, Concept Drift Detection,
+       and Continual Learning Matrix evaluation.
+    4. Offline Linear Probing to benchmark feature representations.
+    """
     def __init__(self, device=None):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -37,6 +45,26 @@ class TrainingManager:
             accumulation_steps=8,  # Effective batch size = 32 * 8 = 256
             lr=1e-3,
     ):
+        """
+        Extended Self-Supervised Pre-training for Foundation Model on historical satellite imagery (2002-2013).
+
+        Implements the DINO SSL objective:
+        - Multi-crop data augmentation (2 global crops @ 224x224, 6 local crops @ 98x98).
+        - Frozen ViT-Base backbone adapted exclusively through low-rank adapter (LoRA) weights on Q, K, V, Proj.
+        - DINO cross-entropy loss with teacher centering and sharpening (with temperature warmup).
+        - Exponential Moving Average (EMA) update of Teacher backbone and projection head.
+        - Mixed-precision acceleration via bfloat16 and gradient accumulation.
+
+        Args:
+            foundation_model (FoundationModel): Foundation model holding DINOv2 backbone and LoRA.
+            df (pd.DataFrame): Historical pre-training dataframe (~140k images, all classes).
+            manager (FmowManager): Data manager providing image retrieval.
+            save_path (str): Destination path for saving adapted LoRA weights.
+            epochs (int): Number of pre-training epochs (default: 25).
+            batch_size (int): Mini-batch size per forward step.
+            accumulation_steps (int): Gradient accumulation steps (effective batch size = batch_size * accumulation_steps).
+            lr (float): Learning rate for LoRA parameters and student projection head.
+        """
         print("\n--- Starting Extended DINOv2 Pre-training with LoRA ---")
 
         from FoundationModel import DINOPretrainWrapper
@@ -47,7 +75,6 @@ class TrainingManager:
 
         # 1. Multi-Crop Augmentation Pipeline (Lightly)
         # Yields 2 global crops (224x224) and 6 local crops (98x98)
-        # 1. Multi-Crop Augmentation Pipeline (Lightly)
         lightly_collate = DINOCollateFunction(
             global_crop_size=224,
             global_crop_scale=(0.4, 1.0),
@@ -158,6 +185,7 @@ class TrainingManager:
         # Save only the state dict of the base foundation model (which includes peft LoRA)
         torch.save(foundation_model.state_dict(), save_path)
 
+
     def pretrain_student(
             self,
             student,
@@ -175,12 +203,41 @@ class TrainingManager:
             lambda_distill=1.0
     ):
         """
-        Unified pretraining loop that handles both standard pretraining and
-        offline feature distillation dynamically.
+        Unified offline pretraining loop for Student models on historical data (2002-2013).
+
+        Supports two training regimes:
+        1. Standard Supervised Warm-up:
+           Student trained purely with Cross-Entropy loss on the 25 classes.
+        2. Distillation-Assisted Warm-up:
+           Student and Projector trained jointly with Cross-Entropy + Feature Distillation loss:
+               L_total = L_ce(logits, labels) + lambda_distill * L_distill(projector(student_features), teacher_features)
+
+        Includes:
+        - Stratified 80% Train, 10% Validation, 10% Test split.
+        - Early stopping based on validation loss with model checkpoint restoration.
+        - Unbiased final evaluation on the held-out test split.
+
+        Args:
+            student (nn.Module): Student model instance (ResNet-18 or ViT-Tiny).
+            df (pd.DataFrame): Balanced historical dataset (2200 samples/class).
+            manager (FmowManager): Data manager instance.
+            class_to_idx (dict): Label to integer index mapping.
+            transform_fn (callable): Image preprocessing transformations.
+            use_embeddings (bool): Whether dataframe contains pre-extracted teacher embeddings.
+            epochs (int): Maximum training epochs (default: 50).
+            batch_size (int): Mini-batch size (default: 64).
+            lr (float): Optimizer learning rate (default: 1e-4).
+            patience (int): Number of epochs without validation loss improvement before early stopping.
+            projector (nn.Module, optional): Projector module if training with feature distillation.
+            lambda_distill (float): Distillation loss scalar weight.
+
+        Returns:
+            tuple: (best_student_model, best_projector_model_or_None)
         """
         print(f"\n--- Initializing Pretraining (Distillation/Embeddings: {use_embeddings}) ---")
 
         # 1. Stratified Train/Val/Test Split (80% Train, 10% Val, 10% Test)
+
         # First split: 80% Train, 20% Temp (which will be split into Val and Test)
         train_df, temp_df = train_test_split(
             df, test_size=0.2, stratify=df['category'], random_state=42
@@ -388,9 +445,46 @@ class TrainingManager:
                      use_ce_masking=False,
                      distillation_stop_after=None):
         """
-        Ottimizzato con DataLoader (I/O asincrono), inferenza batched su GPU,
-        e calcolo dell'accuratezza globale.
+        Online streaming continual learning execution with prequential (Test-Then-Train) evaluation.
+
+        Simulates deployment on an Earth Observation satellite receiving images over time:
+        1. Prequential Evaluation (Test): Each incoming batch is evaluated BEFORE weight updates.
+        2. Sequential Drift Detection: Tracks transitions between concept blocks (5 classes per concept).
+           When a concept drift occurs:
+           - Drift point index is recorded.
+           - Continual Learning Matrix evaluation is executed across all held-out concept test sets.
+        3. Model Training (Train): Unless inference_only=True, fine-tunes the student (and optionally projector)
+           using standard cross-entropy and optional feature distillation.
+        4. Distillation Budget: If distillation_stop_after is specified, stops feature distillation
+           after N samples within each concept to evaluate adaptation speed vs computational budget.
+        5. Metric Aggregation: Calculates rolling accuracy (window=1000), cumulative accuracy,
+           and adaptation window accuracies (first 500 samples, 500-1000 samples, last 500 samples).
+
+        Args:
+            model (nn.Module): Student model being evaluated/adapted on the stream.
+            df (pd.DataFrame): Streaming dataset ordered chronologically / by concept.
+            criterion (nn.Module): Supervised loss function (CrossEntropyLoss).
+            optimizer (optim.Optimizer, optional): Optimizer for model parameters.
+            manager (FmowManager): Data manager for image I/O.
+            transform_fn (callable): Image transform pipeline.
+            class_to_idx (dict): Label name to integer index mapping.
+            batch_size (int): Size of incoming streaming mini-batches.
+            num_epochs_per_batch (int): Number of optimizer updates per incoming batch (typically 1).
+            distillator (Projector, optional): Feature distillation module if active.
+            distill_weight (float): Multiplier for feature distillation loss.
+            ema (EmaTeacher, optional): EMA teacher instance if ensembling predictions.
+            inference_only (bool): If True, tests model without performing backward passes.
+            test_dict (dict, optional): Dictionary of held-out concept test sets for continual learning matrix.
+            window_size (int): Window size for rolling accuracy computation (default: 1000).
+            adaptation_window_size (int): Sample window size for measuring concept adaptation speed (default: 500).
+            freeze_distillator (bool): If True, projector weights are frozen during streaming fine-tuning.
+            use_ce_masking (bool): If True, masks out unseen class logits during cross-entropy computation.
+            distillation_stop_after (int, optional): Sample threshold to deactivate distillation per concept.
+
+        Returns:
+            tuple: (global_accuracy, history_dict, cl_matrix_list)
         """
+
 
         # 1. SETUP DATALOADER
         use_emb = (distillator is not None and not inference_only)
@@ -627,13 +721,30 @@ class TrainingManager:
         return global_acc, history, cl_matrix
 
     def train_linear_probe(self, df_embeddings, class_to_idx, num_classes, epochs=100, lr=1e-3):
+        """
+        Trains an offline linear probe on precomputed feature embeddings.
 
+        Standard evaluation protocol in Self-Supervised Learning:
+        Splits precomputed embeddings (70% Train, 30% Test stratified) and trains a single
+        linear layer to evaluate the linear separability and quality of features extracted
+        by the Raw DINOv2 model vs the Extended DINOv2 (+ LoRA) model.
 
+        Args:
+            df_embeddings (pd.DataFrame): Dataframe with 'embedding' and 'category'.
+            class_to_idx (dict): Category name to class index mapping.
+            num_classes (int): Number of target classes (25).
+            epochs (int): Training epochs for the linear classifier (default: 100).
+            lr (float): Adam optimizer learning rate (default: 1e-3).
+
+        Returns:
+            float: Best test accuracy achieved by the linear probe.
+        """
         print("\n--- Starting Offline Linear Probing ---")
         
         train_df, test_df = train_test_split(
             df_embeddings, test_size=0.3, stratify=df_embeddings['category'], random_state=42
         )
+
         
         # Prepare Tensors
         X_train = torch.tensor(np.stack(train_df['embedding'].values), dtype=torch.float32)

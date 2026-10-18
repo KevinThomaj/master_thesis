@@ -14,8 +14,24 @@ from Config import Config
 from FmowManager import FmowManager
 from TrainingManager import TrainingManager
 
+
 @dataclass
 class ExperimentSetup:
+    """
+    Configuration specification for a single streaming experiment.
+
+    Attributes:
+        description (str): Human-readable name/description of the experimental condition.
+        student_weights_key (str): Key identifying which historical pretrained weights to load
+                                   ('student_only', 'student_proj', or 'fm_linear_probe').
+        projector_weights_key (Optional[str]): Key for projector weights ('projector', 'random', or None).
+        inference_only (bool): If True, model runs evaluation on stream without backward pass updates.
+        distillator_active (bool): Whether distillation loss is computed during streaming fine-tuning.
+        freeze_distillator (bool): If True, keeps the projector frozen during streaming distillation.
+        use_ema (bool): Whether to use an EMA Teacher model for streaming predictions.
+        optimizer_setup (Callable): Factory function constructing the appropriate optimizer.
+        distillation_stop_after (Optional[int]): Sample threshold per drift after which distillation stops.
+    """
     description: str
     student_weights_key: str  # e.g., 'student_only' or 'student_proj'
     projector_weights_key: Optional[str] # e.g., 'projector' or None or 'random'
@@ -26,23 +42,46 @@ class ExperimentSetup:
     optimizer_setup: Callable[[nn.Module, Optional[nn.Module], Config], Optional[optim.Optimizer]]
     distillation_stop_after: Optional[int] = None
 
+
 def optimizer_student_only(student, distillator, config):
+    """Optimizer builder for updating only the student model parameters."""
     return optim.Adam(student.parameters(), lr=config.lr_ft)
 
+
 def optimizer_student_and_proj(student, distillator, config):
+    """
+    Optimizer builder for joint fine-tuning:
+    Student parameters updated with `lr_ft`, Projector parameters updated with `lr_dist_proj`.
+    """
     params = [{'params': student.parameters(), 'lr': config.lr_ft}]
     dist_params = list(distillator.parameters())
     if dist_params:
         params.append({'params': dist_params, 'lr': config.lr_dist_proj})
     return optim.Adam(params)
 
+
 def optimizer_linear_probe(student, distillator, config):
+    """Optimizer builder for updating only the linear probe head on top of the frozen FM."""
     return optim.Adam(student.linear_probe.parameters(), lr=config.lr_ft)
+
 
 def get_experiment_registry() -> Dict[int, ExperimentSetup]:
     """
-    Registry of all available experiments.
-    To add a new experiment, simply add a new entry to this dictionary with a unique ID.
+    Master registry of all experimental conditions investigating how knowledge distillation
+    accelerates adaptation and mitigates catastrophic forgetting across concept drift.
+
+    1) Exp 1: Student finetuned on historic + pure inference on stream (Baseline zero-shot / drift decay)
+    2) Exp 2: (Student + Projector) finetuned on historic + pure inference on stream (Distillation warm-up effect)
+    3) Exp 3: Student finetuned on historic + student finetuning on stream (Standard online fine-tuning)
+    4) Exp 4: Student finetuned on historic + (student + projector) finetuning on stream (Emergent streaming distillation)
+    5) Exp 5: (Student + Projector) finetuned on historic + (student + Projector) finetuned on stream (Continuous distillation)
+    6) Exp 6: (Student + Projector) finetuned on historic + (student finetuned on stream + projector frozen)
+    7) Exp 7: (Student + Projector) finetuned on historic + (student finetuned on stream, no projector)
+    8) Exp 8: Continuous distillation stopping after 1000 samples per concept (Resource budget test)
+    9) Exp 9: Continuous distillation stopping after 2000 samples per concept (Resource budget test)
+    10) Exp 10: Continuous distillation stopping after 4000 samples per concept (Resource budget test)
+    11) Exp 11: Continuous distillation stopping after 8000 samples per concept (Resource budget test)
+    12) Exp 12: Frozen Extended Foundation Model + Online Linear Probing (Upper-bound feature baseline)
     """
     return {
         1: ExperimentSetup(
@@ -172,7 +211,12 @@ def get_experiment_registry() -> Dict[int, ExperimentSetup]:
         ),
     }
 
+
 class ExperimentRunner:
+    """
+    Execution engine that instantiates models, loads appropriate checkpoint weights,
+    and runs experiments across streaming configurations.
+    """
     def __init__(self, device: torch.device, config: Config, manager: FmowManager, training_manager: TrainingManager, fm_model: Optional[nn.Module] = None):
         self.device = device
         self.config = config
@@ -182,6 +226,9 @@ class ExperimentRunner:
         self.registry = get_experiment_registry()
         
     def _get_student(self, weights_key: str, weights_paths: Dict[str, str], num_classes: int) -> nn.Module:
+        """
+        Instantiates student model or linear probe and restores the corresponding checkpoint weights.
+        """
         if weights_key == 'fm_linear_probe':
             if self.fm_model is None:
                 fm = FoundationModel(use_lora=True).to(self.device)
@@ -195,6 +242,7 @@ class ExperimentRunner:
                 model.linear_probe.load_state_dict(torch.load(weights_paths[weights_key], map_location=self.device))
             return model
 
+        # Instantiate student model according to student_type ('resnet' or 'vit')
         if self.config.student_type == 'vit':
             s = StudentVit(numberOfClasses=num_classes, pretrained=False).to(self.device)
         else:
@@ -205,6 +253,9 @@ class ExperimentRunner:
         return s
 
     def _get_distillator(self, weights_key: Optional[str], weights_paths: Dict[str, str], student: nn.Module) -> Optional[nn.Module]:
+        """
+        Instantiates projector module ('linear', 'mlp', or 'rkd') and restores pretrained weights if requested.
+        """
         if weights_key is None:
             return None
             
@@ -224,6 +275,19 @@ class ExperimentRunner:
         return d
 
     def run_experiments(self, experiments: List[int], df_sampled, class_to_idx: Dict[str, int], weights_paths: Dict[str, str], test_dict: Dict) -> Dict[str, Any]:
+        """
+        Executes a sequence of experiments on the provided streaming dataframe partition.
+
+        Args:
+            experiments (List[int]): List of experiment IDs to run.
+            df_sampled (pd.DataFrame): Streaming dataframe containing ordered concepts.
+            class_to_idx (dict): Class name to integer index mapping.
+            weights_paths (dict): Paths to pretrained student and projector weights.
+            test_dict (dict): Dictionary of held-out test splits per concept for CL evaluation.
+
+        Returns:
+            dict: Results payload containing final accuracy, history trajectories, and CL matrices.
+        """
         results_payload = {}
         criterion = nn.CrossEntropyLoss()
 
@@ -274,7 +338,7 @@ class ExperimentRunner:
                 "cl_matrix": cl
             }
 
-            # Cleanup
+            # Cleanup GPU memory between experiment runs
             del student
             if distillator:
                 del distillator
@@ -284,3 +348,4 @@ class ExperimentRunner:
                 torch.cuda.empty_cache()
 
         return results_payload
+

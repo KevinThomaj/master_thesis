@@ -8,10 +8,19 @@ from LinearProbe import LinearProbe
 
 
 class FoundationModel(nn.Module):
+    """
+    Ground-based Earth Observation Foundation Model using Meta's DINOv2 ViT-Base backbone.
+
+    Adapted via Low-Rank Adaptation (LoRA) targeting attention projection matrices ('qkv' and 'proj')
+    to adapt to historical satellite imagery distribution without full fine-tuning.
+
+    Args:
+        use_lora (bool): Whether to inject trainable LoRA adapters or keep the entire backbone frozen.
+    """
     def __init__(self, use_lora=True):
         super(FoundationModel, self).__init__()
 
-        # 1. Load the Meta DINOv2 ViT-Base backbone
+        # 1. Load the Meta DINOv2 ViT-Base backbone (vit_base_patch14_dinov2.lvd142m)
         self.backbone = timm.create_model(
             'vit_base_patch14_dinov2.lvd142m',
             pretrained=True,
@@ -36,18 +45,33 @@ class FoundationModel(nn.Module):
             print("\n--- LoRA Parameters ---")
             self.backbone.print_trainable_parameters()
         else:
+            # Fully freeze backbone parameters when evaluating raw DINOv2
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
     def forward(self, x):
-        """Standard forward pass for downstream feature extraction."""
+        """
+        Standard forward pass for downstream feature extraction.
+
+        Args:
+            x (torch.Tensor): Input images [B, 3, 224, 224].
+
+        Returns:
+            torch.Tensor: High-dimensional visual embeddings [B, embed_dim=768].
+        """
         return self.backbone(x)
 
 
 class DINOPretrainWrapper(nn.Module):
     """
-    Wrapper specifically for the Lightly DINO SSL Training Phase.
-    Holds both Student and Teacher networks.
+    Wrapper specifically for the Lightly DINO Self-Supervised Learning (SSL) Training Phase.
+    
+    Encapsulates both Student and Teacher networks sharing identical architectures:
+    - Student: Trained via backpropagation (updating LoRA parameters and projection head).
+    - Teacher: Updated strictly via Exponential Moving Average (EMA) of student parameters.
+
+    Args:
+        foundation_model (FoundationModel): Base foundation model instance containing LoRA backbone.
     """
 
     def __init__(self, foundation_model):
@@ -55,6 +79,7 @@ class DINOPretrainWrapper(nn.Module):
         self.student_backbone = foundation_model.backbone
 
         # Re-initialize DINO Projection Head from scratch for the Student
+        # Projects 768-d ViT features to high-dimensional categorical distribution (65536)
         self.student_head = DINOProjectionHead(
             input_dim=foundation_model.embed_dim,
             output_dim=65536,  # Standard DINO out_dim
@@ -64,7 +89,7 @@ class DINOPretrainWrapper(nn.Module):
             freeze_last_layer=1
         )
 
-        # Recreate the exact same base model architecture
+        # Recreate the exact same base model architecture for the Teacher
         teacher_base = timm.create_model(
             'vit_base_patch14_dinov2.lvd142m',
             pretrained=False,  # Doesn't matter, we will overwrite weights
@@ -83,7 +108,7 @@ class DINOPretrainWrapper(nn.Module):
         )
         self.teacher_backbone = get_peft_model(teacher_base, lora_config)
 
-        # Recreate a fresh head
+        # Recreate a fresh head for teacher
         self.teacher_head = DINOProjectionHead(
             input_dim=foundation_model.embed_dim,
             output_dim=65536,
@@ -103,13 +128,17 @@ class DINOPretrainWrapper(nn.Module):
             p.requires_grad = False
 
     def forward(self, x):
-        """Student forward pass."""
+        """
+        Student forward pass processing both global and local multi-crop views.
+        """
         features = self.student_backbone(x)
         projections = self.student_head(features)
         return projections
 
     def forward_teacher(self, x):
-        """Teacher forward pass."""
+        """
+        Teacher forward pass processing global views only.
+        """
         features = self.teacher_backbone(x)
         projections = self.teacher_head(features)
         return projections
@@ -118,7 +147,11 @@ class DINOPretrainWrapper(nn.Module):
 class FoundationModelLinearProbe(nn.Module):
     """
     Wraps a frozen Foundation Model with a trainable Linear classification head
-    for online streaming linear probing.
+    for online streaming linear probing (Experiment 12).
+
+    Args:
+        foundation_model (nn.Module): Pretrained/extended Foundation Model backbone.
+        num_classes (int): Number of target streaming classes (default: 25).
     """
     def __init__(self, foundation_model: nn.Module, num_classes: int = 25):
         super().__init__()
@@ -132,12 +165,18 @@ class FoundationModelLinearProbe(nn.Module):
         self.linear_probe = LinearProbe(input_dim=embed_dim, num_classes=num_classes)
 
     def train(self, mode: bool = True):
+        """
+        Sets linear probe to training mode while strictly locking the FM backbone in eval mode.
+        """
         super().train(mode)
         # Ensure foundation model backbone strictly remains in eval mode
         self.foundation_model.eval()
         return self
 
     def forward(self, x):
+        """
+        Forward pass accepting either raw image tensors [B, 3, 224, 224] or precomputed embeddings [B, 768].
+        """
         if x.dim() == 4:
             with torch.no_grad():
                 features = self.foundation_model(x)
@@ -145,3 +184,4 @@ class FoundationModelLinearProbe(nn.Module):
             features = x
         logits = self.linear_probe(features)
         return {'features': features, 'logits': logits}
+

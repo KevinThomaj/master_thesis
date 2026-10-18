@@ -17,6 +17,12 @@ plt.rcParams['grid.alpha'] = 0.7
 
 
 def get_palette():
+    """
+    Returns curated color hex values and formatted human-readable labels for each experiment.
+
+    Returns:
+        tuple: (colors_dict, labels_dict)
+    """
     colors = {
         "exp_1":  "#D62728", # Bright Red: S(hist) + S(inf)
         "exp_2":  "#8B0000", # Dark Crimson: S+P(hist) + S(inf)
@@ -40,16 +46,17 @@ def get_palette():
         "exp_5":  "Exp 5: S+P(hist) + S+P(stream)",
         "exp_6":  "Exp 6: S+P(hist) + S(stream, P frozen)",
         "exp_7":  "Exp 7: S+P(hist) + S(stream, no P)",
-        "exp_8":  "Exp 8: S+P(hist) + S+P(stream) [Stop @ 1k/drift]",
-        "exp_9":  "Exp 9: S+P(hist) + S+P(stream) [Stop @ 2k/drift]",
-        "exp_10": "Exp 10: S+P(hist) + S+P(stream) [Stop @ 4k/drift]",
-        "exp_11": "Exp 11: S+P(hist) + S+P(stream) [Stop @ 8k/drift]",
+        "exp_8":  "Exp 8 (old): S+P(hist) + S+P(stream) [Stop @ 1k/drift]",
+        "exp_9":  "Exp 8: S+P(hist) + S+P(stream) [Stop @ 2k/drift]",
+        "exp_10": "Exp 9: S+P(hist) + S+P(stream) [Stop @ 4k/drift]",
+        "exp_11": "Exp 10: S+P(hist) + S+P(stream) [Stop @ 8k/drift]",
         "exp_12": "Exp 12: Frozen Ext FM + Online Linear Probe"
     }
     return colors, labels
 
 
 def get_exp_num(k):
+    """Extracts integer experiment ID from key string (e.g. 'exp_5' -> 5)."""
     try:
         return int(k.split('_')[1])
     except:
@@ -57,6 +64,7 @@ def get_exp_num(k):
 
 
 def format_exp_title(label_str):
+    """Splits prefix and description onto two lines for clean subplot titles."""
     if ": " in label_str:
         prefix, desc = label_str.split(": ", 1)
         return f"{prefix}:\n{desc}"
@@ -64,6 +72,10 @@ def format_exp_title(label_str):
 
 
 def plot_cl_matrix(cl_matrix, title, ax):
+    """
+    Renders a Continual Learning Evaluation Heatmap on the provided matplotlib axis.
+    Rows represent the concept stage when evaluation occurred; columns represent tested concept test-sets.
+    """
     if not cl_matrix:
         return
         
@@ -93,6 +105,10 @@ def plot_cl_matrix(cl_matrix, title, ax):
 
 
 def plot_forgetting(cl_matrix, title, ax):
+    """
+    Plots a dual-bar chart comparing accuracy achieved immediately after learning each concept
+    vs accuracy measured at the end of the full stream (quantifying catastrophic forgetting).
+    """
     if not cl_matrix or len(cl_matrix) < 2:
         return
         
@@ -125,6 +141,10 @@ def plot_forgetting(cl_matrix, title, ax):
 
 
 def export_detailed_metrics_table(config_key, config_data, labels, output_dir="."):
+    """
+    Exports a CSV table of per-concept windowed metrics (First Window, After First Window,
+    Final Window, Total Accuracy) for a specific configuration.
+    """
     records = []
     for exp_key, data in config_data.items():
         if not exp_key.startswith('exp_'): continue
@@ -153,6 +173,10 @@ def export_detailed_metrics_table(config_key, config_data, labels, output_dir=".
 
 
 def export_global_metrics_summary(results, labels, output_dir="."):
+    """
+    Computes and exports global mean and standard deviation for all adaptation metrics
+    across all concept configurations to CSV.
+    """
     records = []
     for config_key, config_data in results.items():
         if not config_key.startswith('config_'): continue
@@ -181,11 +205,47 @@ def export_global_metrics_summary(results, labels, output_dir="."):
         print(f"[Global] Exported global aggregated metrics to {summary_csv}")
 
 
+
 # =========================================================================
 # GLOBAL AGGREGATED FIGURES
 # =========================================================================
 
-def plot_adaptation_speed(results, labels, save_path=None):
+ERROR_TYPE_LABELS = {'std': 'Std', 'sem': 'SEM', 'ci95': '95% CI'}
+
+
+def compute_error(values, error_type='ci95'):
+    """
+    Spread of a set of independent replicates.
+      - 'std':  sample standard deviation (does NOT shrink with more replicates)
+      - 'sem':  standard error of the mean = std / sqrt(n)
+      - 'ci95': half-width of the 95% confidence interval of the mean (Student t)
+    """
+    arr = np.asarray(values, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    n = len(arr)
+    if n < 2:
+        return 0.0
+    std = float(np.std(arr, ddof=1))
+    if error_type == 'std':
+        return std
+    sem = std / np.sqrt(n)
+    if error_type == 'sem':
+        return float(sem)
+    try:
+        from scipy import stats
+        t_crit = float(stats.t.ppf(0.975, df=n - 1))
+    except ImportError:
+        t_crit = 1.96
+    return float(t_crit * sem)
+
+
+def plot_adaptation_speed(results, labels, save_path=None, error_type='ci95', aggregate='per_config'):
+    """
+    aggregate='per_config': metrics are first averaged over the concepts of each configuration,
+                            so every configuration is one independent replicate (n = #configs).
+    aggregate='pooled':     every (configuration, concept) pair is treated as one value
+                            (legacy behaviour; includes between-concept variability).
+    """
     exp_metrics = {}
     
     for config_key, config_data in results.items():
@@ -210,12 +270,18 @@ def plot_adaptation_speed(results, labels, save_path=None):
                     'total_acc': []
                 }
                 
-            for concept in concept_keys:
-                metrics = det_met[concept]
-                exp_metrics[exp_key]['first_window'].append(metrics.get('first_window_accuracy', 0.0))
-                exp_metrics[exp_key]['after_first_window'].append(metrics.get('after_first_window_accuracy', 0.0))
-                exp_metrics[exp_key]['final_window'].append(metrics.get('final_window_accuracy', 0.0))
-                exp_metrics[exp_key]['total_acc'].append(metrics.get('total_accuracy', 0.0))
+            metric_keys = {
+                'first_window': 'first_window_accuracy',
+                'after_first_window': 'after_first_window_accuracy',
+                'final_window': 'final_window_accuracy',
+                'total_acc': 'total_accuracy',
+            }
+            for short_key, json_key in metric_keys.items():
+                concept_values = [det_met[c].get(json_key, 0.0) for c in concept_keys]
+                if aggregate == 'per_config':
+                    exp_metrics[exp_key][short_key].append(float(np.nanmean(concept_values)))
+                else:
+                    exp_metrics[exp_key][short_key].extend(concept_values)
 
     if not exp_metrics:
         print("No detailed metrics found for adaptation speed plot.")
@@ -229,23 +295,25 @@ def plot_adaptation_speed(results, labels, save_path=None):
     final_window_means, final_window_stds = [], []
     total_acc_means, total_acc_stds = [], []
     
+    n_replicates = 0
     for exp_key in exp_keys_sorted:
         metrics = exp_metrics[exp_key]
         if len(metrics['first_window']) > 0:
+            n_replicates = max(n_replicates, len(metrics['first_window']))
             experiment_names.append(labels.get(exp_key, exp_key))
             first_window_means.append(float(np.nanmean(metrics['first_window'])))
-            first_window_stds.append(float(np.nanstd(metrics['first_window'])))
+            first_window_stds.append(compute_error(metrics['first_window'], error_type))
             after_first_window_means.append(float(np.nanmean(metrics['after_first_window'])))
-            after_first_window_stds.append(float(np.nanstd(metrics['after_first_window'])))
+            after_first_window_stds.append(compute_error(metrics['after_first_window'], error_type))
             final_window_means.append(float(np.nanmean(metrics['final_window'])))
-            final_window_stds.append(float(np.nanstd(metrics['final_window'])))
+            final_window_stds.append(compute_error(metrics['final_window'], error_type))
             total_acc_means.append(float(np.nanmean(metrics['total_acc'])))
-            total_acc_stds.append(float(np.nanstd(metrics['total_acc'])))
+            total_acc_stds.append(compute_error(metrics['total_acc'], error_type))
 
     x = np.arange(len(experiment_names))
     width = 0.19
     
-    fig, ax = plt.subplots(figsize=(17, 8))
+    fig, ax = plt.subplots(figsize=(15, 8.0))
     err_kwargs = {'elinewidth': 1.0, 'ecolor': '#333333', 'capthick': 1.0}
 
     rects1 = ax.bar(x - 1.5 * width, first_window_means, width, yerr=first_window_stds, capsize=3,
@@ -258,10 +326,11 @@ def plot_adaptation_speed(results, labels, save_path=None):
                     label='Total Concept Accuracy', color='#8E44AD', edgecolor='black', linewidth=0.5, error_kw=err_kwargs)
     
     ax.set_ylabel('Accuracy (%)', fontsize=12, fontweight='bold')
-    ax.set_title('Adaptation Speed & Concept Progression\n(Mean ± Std across all Concepts & Configurations)', fontsize=15, fontweight='bold', pad=15)
+    ax.set_title(f'Adaptation Speed & Concept Progression', fontsize=15, fontweight='bold', pad=15)
     ax.set_xticks(x)
-    ax.set_xticklabels(experiment_names, rotation=20, ha='right', fontsize=9.5)
-    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=10, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
+    exp_display_names = [name.replace(" [", "\n[") for name in experiment_names]
+    ax.set_xticklabels(exp_display_names, rotation=15, ha='right', fontsize=9.5)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.25), ncol=4, fontsize=10, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
     
     # Calculate top y-limit with safety headroom for error bars and labels
     max_val_with_err = max(
@@ -278,7 +347,7 @@ def plot_adaptation_speed(results, labels, save_path=None):
     ax.bar_label(rects3, padding=3, fmt='%.1f', fontsize=7.5, fontweight='bold', rotation=45)
     ax.bar_label(rects4, padding=3, fmt='%.1f', fontsize=7.5, fontweight='bold', rotation=45)
     
-    fig.subplots_adjust(left=0.06, right=0.72, top=0.90, bottom=0.20)
+    fig.subplots_adjust(left=0.07, right=0.96, top=0.91, bottom=0.28)
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved: {save_path}")
@@ -361,6 +430,10 @@ def get_experiment_overall_mean(results, exp_key):
 
 
 def plot_global_rolling_accuracy(results, labels, colors, ymin=None, ymax=None, save_path=None):
+    """
+    Computes and plots the mean rolling accuracy trajectory across all concept configurations.
+    Draws vertical dashed lines and labels at concept drift transition points.
+    """
     exp_rolling = {}
     drift_points = []
     x_axis = None
@@ -387,7 +460,7 @@ def plot_global_rolling_accuracy(results, labels, colors, ymin=None, ymax=None, 
         
     exp_keys_sorted = sorted(list(exp_rolling.keys()), key=get_exp_num)
     
-    fig, ax = plt.subplots(figsize=(17, 8))
+    fig, ax = plt.subplots(figsize=(15, 8.5))
     mean_curves = {}
     sample_len = 0
     
@@ -431,19 +504,23 @@ def plot_global_rolling_accuracy(results, labels, colors, ymin=None, ymax=None, 
                 ax.text(dp + x_offset, y_min_zoomed + y_range * 0.03, f'Drift {idx+1}', rotation=90, color='#555555', fontsize=9, fontweight='bold', va='bottom', ha='left')
             
     ax.set_title("Global Rolling Accuracy (Window = 1000 Images)\n(Averaged across all Configurations)", fontsize=15, fontweight='bold', pad=15)
-    ax.set_xlabel("Total Samples Seen in Stream", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Total Samples Seen in Stream", fontsize=12, fontweight='bold', labelpad=8)
     ax.set_ylabel("Rolling Accuracy (%)", fontsize=12, fontweight='bold')
     ax.set_ylim(y_min_zoomed, y_max_zoomed)
-    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9.5, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=9.5, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC', columnspacing=1.8, handletextpad=0.6)
     ax.grid(True, linestyle='--', alpha=0.6)
     
-    fig.subplots_adjust(left=0.06, right=0.64, top=0.90, bottom=0.10)
+    fig.subplots_adjust(left=0.07, right=0.96, top=0.91, bottom=0.26)
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved: {save_path}")
 
 
 def plot_global_cumulative_accuracy(results, labels, colors, ymin=None, ymax=None, save_path=None):
+    """
+    Plots global cumulative accuracy averaged across configurations.
+    Curves are drawn segment-by-segment per concept to prevent vertical visual artifacts at drift boundaries.
+    """
     exp_cumulative = {}
     drift_points = []
     x_axis = None
@@ -470,7 +547,7 @@ def plot_global_cumulative_accuracy(results, labels, colors, ymin=None, ymax=Non
         
     exp_keys_sorted = sorted(list(exp_cumulative.keys()), key=get_exp_num)
     
-    fig, ax = plt.subplots(figsize=(17, 8))
+    fig, ax = plt.subplots(figsize=(15, 8.5))
     mean_curves = {}
     sample_len = 0
     
@@ -515,19 +592,23 @@ def plot_global_cumulative_accuracy(results, labels, colors, ymin=None, ymax=Non
                 ax.text(dp + x_offset, y_min_zoomed + y_range * 0.03, f'Drift {idx+1}', rotation=90, color='#555555', fontsize=9, fontweight='bold', va='bottom', ha='left')
             
     ax.set_title("Global Cumulative Accuracy\n(Averaged across all Configurations)", fontsize=15, fontweight='bold', pad=15)
-    ax.set_xlabel("Total Samples Seen in Stream", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Total Samples Seen in Stream", fontsize=12, fontweight='bold', labelpad=8)
     ax.set_ylabel("Cumulative Accuracy (%)", fontsize=12, fontweight='bold')
     ax.set_ylim(y_min_zoomed, y_max_zoomed)
-    ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9.5, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=9.5, frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC', columnspacing=1.8, handletextpad=0.6)
     ax.grid(True, linestyle='--', alpha=0.6)
     
-    fig.subplots_adjust(left=0.06, right=0.64, top=0.90, bottom=0.10)
+    fig.subplots_adjust(left=0.07, right=0.96, top=0.91, bottom=0.26)
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved: {save_path}")
 
 
 def plot_global_cl_matrices(results, labels, save_path=None):
+    """
+    Renders a multi-panel grid displaying the Continual Learning evaluation matrices
+    (mean ± std across configurations in each cell) for every experiment.
+    """
     exp_matrices = {}
     
     for config_key, config_data in results.items():
@@ -633,7 +714,12 @@ def plot_global_cl_matrices(results, labels, save_path=None):
 
 
 def plot_global_forgetting(results, labels, save_path=None):
+    """
+    Renders a multi-panel comparison of immediate vs final concept accuracy across all experiments,
+    with mean ± std error bars and value labels.
+    """
     exp_forgetting = {}
+
     
     for config_key, config_data in results.items():
         if not config_key.startswith('config_'):
@@ -725,10 +811,10 @@ def plot_global_forgetting(results, labels, save_path=None):
     
     if rect1_sample is not None and rect2_sample is not None:
         fig.legend(handles=[rect1_sample, rect2_sample], labels=['Right after learning', 'At end of stream'],
-                   loc='upper center', bbox_to_anchor=(0.5, 0.925), ncol=2, fontsize=10.5, 
+                   loc='lower center', bbox_to_anchor=(0.5, 0.015), ncol=2, fontsize=10.5, 
                    frameon=True, facecolor='white', framealpha=0.95, edgecolor='#CCCCCC')
         
-    fig.subplots_adjust(left=0.06, right=0.96, top=0.76, bottom=0.08, hspace=0.48, wspace=0.28)
+    fig.subplots_adjust(left=0.06, right=0.96, top=0.91, bottom=0.12, hspace=0.48, wspace=0.28)
     
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -742,8 +828,14 @@ def main():
     parser.add_argument('--show_individual', action='store_true', help="Open interactive GUI windows for each individual config and experiment (warning: generates 100+ windows)")
     parser.add_argument('--save_individual', action='store_true', default=True, help="Save individual config plots to output_dir")
     parser.add_argument('--no_show', action='store_true', help="Skip interactive plt.show() display")
-    parser.add_argument('--ymin', type=float, default=None, help="Custom minimum Y-axis limit for accuracy plots (default: auto-zoomed)")
+    parser.add_argument('--ymin', type=float, default=40.0, help="Custom minimum Y-axis limit for accuracy plots (default: 40.0)")
     parser.add_argument('--ymax', type=float, default=None, help="Custom maximum Y-axis limit for accuracy plots (default: auto-zoomed)")
+    parser.add_argument('--error_type', type=str, default='ci95', choices=['std', 'sem', 'ci95'],
+                        help="Error bars for adaptation speed: std (spread, does not shrink with more configs), "
+                             "sem (std/sqrt(n)) or ci95 (95%% CI of the mean). Default: ci95")
+    parser.add_argument('--aggregate', type=str, default='per_config', choices=['per_config', 'pooled'],
+                        help="per_config: one value per configuration (concepts averaged). "
+                             "pooled: every (config, concept) pair is a value (legacy).")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -798,6 +890,8 @@ def main():
                 ax1.set_xlabel("Samples Seen", fontsize=10)
                 ax1.set_ylabel("Accuracy (%)", fontsize=10)
                 ax1.legend(loc="lower right")
+                if args.ymin is not None:
+                    ax1.set_ylim(bottom=args.ymin, top=args.ymax if args.ymax is not None else 100.0)
                 ax1.grid(True, linestyle='--', alpha=0.6)
                 
                 ax2 = fig.add_subplot(1, 3, 2)
@@ -830,7 +924,8 @@ def main():
     global_dir = os.path.join(args.output_dir, "global")
     
     # Task 0 & 4: Adaptation Speed (4 Bars)
-    plot_adaptation_speed(results, labels, save_path=os.path.join(global_dir, "global_adaptation_speed.png"))
+    plot_adaptation_speed(results, labels, save_path=os.path.join(global_dir, "global_adaptation_speed.png"),
+                          error_type=args.error_type, aggregate=args.aggregate)
     
     # Task 2: Global Rolling Accuracy (Mean ± Std)
     plot_global_rolling_accuracy(results, labels, colors, ymin=args.ymin, ymax=args.ymax, save_path=os.path.join(global_dir, "global_rolling_accuracy.png"))

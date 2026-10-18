@@ -1,3 +1,22 @@
+"""
+Master Thesis Continual Learning & Feature Distillation Pipeline.
+
+Orchestration flow:
+1. Parse experiment configuration parameters and initialize GPU acceleration (TF32).
+2. Load and temporally partition WILDS-FMoW:
+   - Historical Pre-training: 2002-2013 (2200 samples/class across top 25 classes).
+   - Temporal Drift Gap: 2014-2015 (excluded).
+   - Online Streaming: 2016-2017 (2300 samples/class across same 25 classes).
+3. Ground Foundation Model: Load or train DINOv2 ViT-Base with LoRA adapters via DINO SSL.
+4. Student Model Warm-up: Load or train lightweight Student (ResNet-18 or ViT-Tiny)
+   under supervised cross-entropy or joint feature distillation.
+5. Extract foundation model feature embeddings and run offline linear probe benchmarks.
+6. Run online streaming continual learning experiments across multiple concept configurations
+   (5 concepts of 5 classes each) measuring prequential accuracy, adaptation speed,
+   and continual learning forgetting matrices.
+7. Export comprehensive JSON results for plotting.
+"""
+
 import os
 import json
 import torch
@@ -16,6 +35,13 @@ from ExperimentRunner import ExperimentRunner
 
 
 def setup_device():
+    """
+    Configures PyTorch compute device and enables TensorFloat32 (TF32) execution
+    for high throughput on Ampere and Ada Lovelace GPUs.
+
+    Returns:
+        torch.device: Active device ('cuda' or 'cpu').
+    """
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -28,6 +54,20 @@ def setup_device():
 
 
 def run_fm_pretraining(device, preDF, manager, training_manager, config):
+    """
+    Loads existing Foundation Model LoRA weights from disk, or executes
+    extended DINO self-supervised pre-training on all historical 2002-2013 images (~140k).
+
+    Args:
+        device (torch.device): Compute device.
+        preDF (pd.DataFrame): Historical dataset containing all images from 2002-2013.
+        manager (FmowManager): Data manager instance.
+        training_manager (TrainingManager): Training manager instance.
+        config (Config): Experiment configuration.
+
+    Returns:
+        FoundationModel: Foundation Model with adapted LoRA parameters in eval mode.
+    """
     fm_model = FoundationModel(use_lora=True).to(device)
     print("\n--- STEP 3: Extended Pretraining unsupervised Foundation Model on all data from 2002-2013 ---")
 
@@ -51,6 +91,23 @@ def run_fm_pretraining(device, preDF, manager, training_manager, config):
 
 
 def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_manager, class_to_idx, config):
+    """
+    Manages offline warm-up of the Student model on the 25 selected classes from 2002-2013:
+    1. Student-only warm-up: Trained with Cross-Entropy only (needed by Exps 1, 3, 4).
+    2. Student+Projector warm-up: Trained with Cross-Entropy + Feature Distillation from Foundation Model (needed by Exps 2, 5..11).
+
+    Args:
+        device (torch.device): Compute device.
+        preDF_sampled (pd.DataFrame): Balanced historical dataset (2200 samples/class).
+        fm_model (FoundationModel): Extended Foundation Model for extracting teacher embeddings.
+        manager (FmowManager): Data manager.
+        training_manager (TrainingManager): Training manager.
+        class_to_idx (dict): Class name to integer index mapping.
+        config (Config): Experiment configuration.
+
+    Returns:
+        dict: Mapping of weight keys to their file paths on disk.
+    """
     print("\n--- STEP 6: Offline Pretraining on preDF (2002-2013) ---")
 
     needs_student_only = any(exp in config.experiments for exp in [1, 3, 4])
@@ -144,6 +201,16 @@ def run_student_pretraining(device, preDF_sampled, fm_model, manager, training_m
 
 
 def extract_streaming_embeddings_and_eval(device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config):
+    """
+    Precomputes foundation model visual representations for the streaming dataset (2016-2017)
+    and benchmarks linear separability:
+    1. Extracts embeddings using Raw DINOv2 (no LoRA).
+    2. Extracts embeddings using Extended DINOv2 (+ LoRA).
+    3. Trains an offline linear probe on both sets to measure feature enhancement from Earth Observation SSL pretraining.
+
+    Returns:
+        pd.DataFrame: Cached dataframe containing extended foundation model embeddings.
+    """
     print("\n--- STEP 7a: Extracting Embeddings for Raw Foundation Model ---")
     fm_model_raw = FoundationModel(use_lora=False).to(device)
     fm_model_raw.eval()
@@ -187,6 +254,9 @@ def extract_streaming_embeddings_and_eval(device, postDF_sampled, fm_model, mana
 
 
 def prepare_streaming_data(postDF_ext_embed, manager, config, top_25_classes, config_id):
+    """
+    Constructs the concept streaming schedule and stratified test sets for a specific concept permutation ID.
+    """
     # Let manager handle the pandas slicing
     stream_df, test_dict = manager.prepare_streaming_concepts(
         postDF_sampled=postDF_ext_embed,
@@ -194,12 +264,15 @@ def prepare_streaming_data(postDF_ext_embed, manager, config, top_25_classes, co
         test_size_per_concept=config.test_size_per_concept,
         config_id=config_id,
         recurrent_concept=config.recurrent_concept
-        )
+    )
 
     return stream_df, test_dict
 
 
 def save_experiment_results(results_payload, verbose=True):
+    """
+    Serializes experiment logs, prequential histories, and continual learning matrices to JSON.
+    """
     output_file = "experiment_results.json"
     with open(output_file, "w") as f:
         json.dump(results_payload, f, indent=4)
@@ -212,31 +285,39 @@ def save_experiment_results(results_payload, verbose=True):
 
 
 def main():
+    """
+    Primary pipeline entry point executing pre-training, embedding caching, and streaming evaluation.
+    """
     config = Config.parse_arguments()
     device = setup_device()
 
     manager = FmowManager(device=device)
     training_manager = TrainingManager(device=device)
 
+    # 1. Dataset Temporal Partitioning
     preDF_sampled, postDF_sampled, top_25_classes, class_to_idx, preDF = manager.prepare_data_splits(
         num_classes=config.num_classes,
         pre_samples=config.pre_samples_per_class,
         post_samples=config.post_samples_per_class
     )
 
+    # 2. Foundation Model Extended SSL Pretraining / Weight Loading
     fm_model = run_fm_pretraining(device, preDF, manager, training_manager, config)
 
+    # 3. Student Pretraining / Weight Loading
     weights_paths = run_student_pretraining(
         device, preDF_sampled, fm_model, manager, training_manager, class_to_idx, config
     )
 
     results_payload = {}
 
+    # 4. Feature Extraction & Linear Probing Benchmark
     # Embeddings + offline linear probing are independent of the concept grouping: compute once.
     postDF_ext_embed = extract_streaming_embeddings_and_eval(
         device, postDF_sampled, fm_model, manager, training_manager, class_to_idx, config
     )
 
+    # 5. Online Streaming Experimentation across Concept Configurations
     runner = ExperimentRunner(device, config, manager, training_manager, fm_model=fm_model)
     n_confs = len(config.concept_configurations)
 
@@ -258,7 +339,7 @@ def main():
         # Checkpoint after every configuration so long runs are not lost on failure
         save_experiment_results(results_payload, verbose=False)
 
-    # Cleanup FM
+    # Cleanup Foundation Model from GPU memory
     del fm_model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

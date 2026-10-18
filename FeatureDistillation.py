@@ -17,12 +17,14 @@ from torch import nn
 import torch.nn.functional as F
 
 class Projector(nn.Module):
+    """
+    Abstract base class for feature projection and distillation modules.
+    """
     def __init__(self):
         super().__init__()
 
-
-    def forward(self,x):
-        raise NotImplementedError("Bo")
+    def forward(self, student_features, teacher_features):
+        raise NotImplementedError("Subclasses must implement the forward distillation loss computation.")
 
 
 #remember to do batch normalization
@@ -53,23 +55,59 @@ class LinearBNLogSumDistiller(Projector):
 # loss.backward()
 
 class LinearDistiller(Projector):
-    def __init__(self,dimFeatureStudent,dimFeatureTeacher):
+    """
+    Linear feature projector that maps student feature dimension to teacher feature dimension
+    and computes Mean Squared Error (MSE) loss.
+
+    Args:
+        dimFeatureStudent (int): Feature dimensionality of student model (e.g. 512 for ResNet18, 192 for ViT-Tiny).
+        dimFeatureTeacher (int): Feature dimensionality of teacher/foundation model (e.g. 768 for DINOv2 ViT-Base).
+    """
+    def __init__(self, dimFeatureStudent, dimFeatureTeacher):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Linear(dimFeatureStudent,dimFeatureTeacher)
+            nn.Linear(dimFeatureStudent, dimFeatureTeacher)
         )
-    def forward(self,student_features,teacher_features):
+
+    def forward(self, student_features, teacher_features):
+        """
+        Projects student features into the teacher representation space and computes MSE loss.
+
+        Args:
+            student_features (torch.Tensor): Student features [B, D_student].
+            teacher_features (torch.Tensor): Teacher features [B, D_teacher].
+
+        Returns:
+            torch.Tensor: Scalar MSE loss value.
+        """
         projected_student_features = self.model(student_features)
-        loss = nn.functional.mse_loss(projected_student_features,teacher_features)
+        loss = nn.functional.mse_loss(projected_student_features, teacher_features)
         return loss
 
 
 class RKDDistiller(Projector):
+    """
+    Relational Knowledge Distillation (RKD) distance-wise module.
+    
+    Instead of projecting representations directly, RKD transfers structural relations
+    (pairwise distances between examples in the mini-batch) normalized by the batch mean distance.
+    This makes distillation parameter-free and architecture-agnostic.
+    """
     def __init__(self):
         super().__init__()
         # No projector needed!
 
     def forward(self, student_features, teacher_features):
+        """
+        Computes RKD distance loss using Huber / Smooth L1 loss on normalized pairwise distance matrices.
+
+        Args:
+            student_features (torch.Tensor): Student features [B, D_student].
+            teacher_features (torch.Tensor): Teacher features [B, D_teacher].
+
+        Returns:
+            torch.Tensor: Scalar RKD loss value.
+        """
         # Compute pairwise Euclidean distances (no normalisation)
         s_dist = torch.cdist(student_features, student_features, p=2)
         t_dist = torch.cdist(teacher_features, teacher_features, p=2)
@@ -84,16 +122,39 @@ class RKDDistiller(Projector):
         # Huber loss on normalised distances
         loss = F.smooth_l1_loss(s_dist_norm, t_dist_norm)
         return loss
+
+
 class MLPDistiller(Projector):
-    def __init__(self,dimFeatureStudent,dimFeatureTeacher,hiddenLayerSize):
+    """
+    Non-linear Multi-Layer Perceptron (MLP) feature projector with a single hidden layer and ReLU activation.
+    Computes MSE loss between projected student features and teacher features.
+
+    Args:
+        dimFeatureStudent (int): Student feature dimension.
+        dimFeatureTeacher (int): Teacher feature dimension (768).
+        hiddenLayerSize (int): Dimension of the intermediate hidden layer (e.g. 1024).
+    """
+    def __init__(self, dimFeatureStudent, dimFeatureTeacher, hiddenLayerSize):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Linear(dimFeatureStudent,hiddenLayerSize),
+            nn.Linear(dimFeatureStudent, hiddenLayerSize),
             nn.ReLU(),
-            nn.Linear(hiddenLayerSize,dimFeatureTeacher)
+            nn.Linear(hiddenLayerSize, dimFeatureTeacher)
         )
-    def forward(self,student_features,teacher_features):
+
+    def forward(self, student_features, teacher_features):
+        """
+        Forward pass through the MLP projector and MSE loss calculation.
+
+        Args:
+            student_features (torch.Tensor): Student features [B, D_student].
+            teacher_features (torch.Tensor): Teacher features [B, D_teacher].
+
+        Returns:
+            torch.Tensor: Scalar MSE loss value.
+        """
         projected_student_features = self.model(student_features)
-        loss = nn.functional.mse_loss(projected_student_features,teacher_features)
+        loss = nn.functional.mse_loss(projected_student_features, teacher_features)
         return loss
+
 

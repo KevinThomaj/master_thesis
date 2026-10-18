@@ -3,58 +3,75 @@ from dataclasses import dataclass, field
 from typing import List
 import torchvision.transforms as T
 
+
 @dataclass
 class Config:
+    """
+    Central experiment configuration and hyperparameter container.
+
+    Holds settings for:
+    - Online streaming parameters (batch size, epochs per batch, evaluation windows).
+    - Model architecture choices (ResNet-18 vs ViT-Tiny student, Linear/MLP/RKD projector).
+    - Learning rates and loss weighting for student fine-tuning and feature distillation.
+    - Dataset parameters (25 classes, 2200 historical samples/class, 2300 streaming samples/class, 100 test samples/concept).
+    - Concept configurations and experiment selection (Experiments 1..12).
+    """
+
     # Streaming Hyperparameters
-    stream_batch_size: int = 10
-    stream_epochs: int = 1
-    use_ce_masking: bool = False
-    rolling_window_size: int = 1000
-    adaptation_window_size: int = 500
+    stream_batch_size: int = 10          # Batch size for online prequential evaluation & training
+    stream_epochs: int = 1               # Number of gradient updates per incoming streaming batch
+    use_ce_masking: bool = False         # Whether to mask unseen class logits during streaming
+    rolling_window_size: int = 1000      # Window size (samples) for rolling accuracy tracking
+    adaptation_window_size: int = 500    # Window size (samples) for adaptation speed bar chart metrics
     
     # Model Configurations
-    student_type: str = 'resnet'  # 'resnet' or 'vit'
-    ema_alpha: float = 0.99
-    projector_type: str = 'linear'  # 'linear', 'mlp', or 'rkd'
-    mlp_hidden_size: int = 1024
+    student_type: str = 'resnet'         # Student backbone: 'resnet' (ResNet-18) or 'vit' (ViT-Tiny)
+    ema_alpha: float = 0.99              # Smoothing factor alpha for EMA Teacher
+    projector_type: str = 'linear'       # Feature distillation projector: 'linear', 'mlp', or 'rkd'
+    mlp_hidden_size: int = 1024          # Hidden dimension when using MLP projector
     
     # Learning Rates
-    lr_ft: float = 1e-4
-    lr_dist_proj: float = 1e-3
+    lr_ft: float = 1e-4                  # Learning rate for student model fine-tuning
+    lr_dist_proj: float = 1e-3           # Learning rate for feature distillation projector
     
     # Loss Weights
-    distill_weight: float = 1.0
+    distill_weight: float = 1.0          # Multiplier lambda for feature distillation loss
     
-    # Experiments
+    # Experiments and Stream Configurations
     experiments: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
     concept_configurations: List[int] = field(default_factory=lambda: list(range(1, 31)))
-    recurrent_concept: str = None
+    recurrent_concept: str = None        # Name of concept to repeat at the end of stream (e.g. 'Concept_0')
     
-    # Data params
-    num_classes: int = 25
-    pre_samples_per_class: int = 2200
-    post_samples_per_class: int = 2300
-    test_size_per_concept: int = 100
+    # Data params matching the thesis specification
+    num_classes: int = 25                # Number of selected stable classes
+    pre_samples_per_class: int = 2200    # Historical pre-training images per class (2002-2013)
+    post_samples_per_class: int = 2300   # Online streaming images per class (2016-2017)
+    test_size_per_concept: int = 100     # Evaluation test set held out per concept for CL matrix
     
     @property
     def fm_weights_path(self) -> str:
+        """Path to saved Foundation Model (DINOv2 + LoRA) weights."""
         return "./pretrained_dinov2_lora.pth"
 
     @property
     def student_weights_path(self) -> str:
+        """Path to saved Student weights pretrained with cross-entropy only."""
         return f"./pretrained_student_weights_{self.student_type}.pth"
 
     @property
     def student_proj_weights_path(self) -> str:
+        """Path to saved Student weights pretrained with joint cross-entropy and feature distillation."""
         return f"./pretrained_student_proj_weights_{self.student_type}_{self.projector_type}.pth"
 
     @property
     def proj_weights_path(self) -> str:
+        """Path to saved Projector weights from offline pretraining."""
         return f"./pretrained_projector_weights_{self.student_type}_{self.projector_type}.pth"
 
     # Default Transforms
     @property
     def transform_imagenet(self):
+        """Standard ImageNet preprocessing: ToTensor followed by mean and std normalization."""
         return T.Compose([
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -62,6 +79,12 @@ class Config:
 
     @staticmethod
     def parse_arguments():
+        """
+        Parses command-line arguments to configure pipeline execution.
+
+        Returns:
+            Config: Populated Config instance.
+        """
         parser = argparse.ArgumentParser(description="Fmow Streaming Experiments Pipeline")
         parser.add_argument('--stream_batch_size', type=int, default=10,
                             help='Batch size for the online streaming phase.')
@@ -119,3 +142,4 @@ class Config:
             use_ce_masking=args.use_ce_masking,
             recurrent_concept=args.recurrent_concept
         )
+

@@ -16,11 +16,33 @@ from FmowTorchDataset import FmowTorchDataset
 
 
 class FmowManager:
+    """
+    Data management, preprocessing, and streaming orchestration for WILDS-FMoW.
+
+    Responsibilities:
+    - Downloading and loading WILDS-FMoW metadata and images.
+    - Implementing the temporal split:
+        * Historical (Pre-training): 2002 - 2013
+        * Temporal Gap: 2014 - 2015 (excluded to enforce real-world geographic & semantic drift)
+        * Online Phase: 2016 - 2017
+    - Filtering and class balancing: Top 25 well-populated classes across both phases.
+    - Pre-computing and caching Foundation Model feature embeddings to parquet files.
+    - Deterministic partition of the 25 classes into 5 concept tasks (5 classes each)
+      across multiple random configurations for statistical validation.
+    - Concept-stratified test set extraction (100 samples/concept) for continual learning matrices.
+    """
     def __init__(self, device=None):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def get_dataset(self):
-        # Datetime patching for ISO8601
+        """
+        Loads the WILDS-FMoW dataset metadata and applies datetime parsing patches.
+
+        Returns:
+            pd.DataFrame: Complete metadata dataframe with 'image_index', 'timestamp',
+                          'year_extracted', and 'region_names'.
+        """
+        # Datetime patching for ISO8601 compatibility across pandas versions
         import pandas.core.tools.datetimes as _pd_dt_module
         _true_orig_to_datetime = _pd_dt_module.to_datetime
 
@@ -46,7 +68,18 @@ class FmowManager:
         return df
 
     def sample_dataset(self, df, category_col='category', samples_per_class=32, random_state=42):
-        """Samples a balanced subset from the main dataframe."""
+        """
+        Samples an exact, balanced subset of images per category from the dataframe.
+
+        Args:
+            df (pd.DataFrame): Input dataframe.
+            category_col (str): Column name containing class labels.
+            samples_per_class (int): Number of images to sample per class.
+            random_state (int): Seed for reproducibility.
+
+        Returns:
+            pd.DataFrame: Filtered balanced dataframe.
+        """
         filtered_df = df.copy()
         print(f"--- Sampling {samples_per_class} images per class ---")
         sample_indices = []
@@ -63,18 +96,34 @@ class FmowManager:
 
     def get_input(self, idx):
         """
-        Returns an RGB image for a given idx, ensuring file handles are safely closed.
+        Loads an RGB image from the local disk for a given index.
+
+        Args:
+            idx (int): Global WILDS image index.
+
+        Returns:
+            PIL.Image.Image: Loaded RGB PIL Image.
         """
         file_path = Path('./data/' + 'fmow_v1.1') / 'images' / f'rgb_img_{idx}.png'
         with Image.open(file_path) as img:
             return img.convert('RGB')
 
-
     #Think if this should be an operation in the FoundationModel class
     def get_embeddings(self, df_sample, model, transform_fn, batch_size=128,
                        save_path=None):
         """
-        Extracts embeddings using DataLoader for parallel I/O processing.
+        Extracts high-dimensional visual embeddings using DataLoader for parallel I/O processing.
+        Optionally caches results as a Parquet file for fast reuse.
+
+        Args:
+            df_sample (pd.DataFrame): Dataframe of images to extract features for.
+            model (nn.Module): Foundation Model or backbone extractor.
+            transform_fn (callable): Image preprocessing transformations.
+            batch_size (int): Batch size for extraction.
+            save_path (str, optional): Parquet file path for disk caching.
+
+        Returns:
+            pd.DataFrame: Dataframe with 'image_index', 'category', and 'embedding' columns.
         """
         if save_path and os.path.exists(save_path):
             print(f"Found saved dataset at {save_path}. Loading from disk...")
@@ -98,7 +147,7 @@ class FmowManager:
             embed_dataset,
             batch_size=batch_size,
             shuffle=False,           # Must be False to match the dataframe order
-            num_workers=4, # Parallel image loading
+            num_workers=4,           # Parallel image loading
             pin_memory=True
         )
 
@@ -106,7 +155,7 @@ class FmowManager:
 
         with torch.no_grad():
             # 2. The Clean Loop: DataLoader yields purely batch_imgs
-            for batch_imgs,labels in tqdm(embed_loader, desc="Extracting"):
+            for batch_imgs, labels in tqdm(embed_loader, desc="Extracting"):
 
                 batch_imgs = batch_imgs.to(self.device)
                 features = model(batch_imgs)
@@ -136,9 +185,18 @@ class FmowManager:
 
     # 4. IMPLEMENTED DIVIDE METHOD
     def divide(self, df=None):
+        """
+        Splits the dataset into two distinct temporal groups:
+        - Group 1 (Historical / Pre-training): 2002 to 2013
+        - Gap: 2014 to 2015 (omitted to introduce substantial temporal drift)
+        - Group 2 (Online Streaming): 2016 to 2017
 
-        #Splits the dataset into two distinct temporal groups.
+        Args:
+            df (pd.DataFrame): Full metadata dataframe.
 
+        Returns:
+            tuple: (df_early, df_late)
+        """
         print("Splitting dataset temporally...")
 
         # Group 1: 2002 to 2013
@@ -154,7 +212,17 @@ class FmowManager:
 
         return df_early, df_late
 
-    def create_concepts(self, df,class_to_concept_mapping):
+    def create_concepts(self, df, class_to_concept_mapping):
+        """
+        Assigns concept labels to samples based on a dictionary mapping classes to concepts.
+
+        Args:
+            df (pd.DataFrame): Dataframe containing 'category' column.
+            class_to_concept_mapping (dict): Mapping from class name to concept string (e.g. 'Concept_0').
+
+        Returns:
+            pd.DataFrame: Dataframe with added 'concept' column.
+        """
         # Modify the dataset dataframe to include the new labels
         df['concept'] = df['category'].map(class_to_concept_mapping)
         print("Distribution of images across the new macro-classes:")
@@ -162,7 +230,10 @@ class FmowManager:
         return df
 
     def cluster_by_class(self, df, num_clusters=6, method='ward', metric='euclidean'):
-        """Takes the unified dataframe, extracts embeddings natively, and performs clustering."""
+        """
+        Takes the unified dataframe, extracts class embedding centroids, and performs hierarchical clustering.
+        Used for semantic concept grouping analysis.
+        """
         print("Clustering embeddings...")
 
         # Unstack the list of embeddings back into a 2D numpy array
@@ -196,6 +267,17 @@ class FmowManager:
         return df
 
     def prepare_data_splits(self, num_classes=25, pre_samples=2200, post_samples=2300):
+        """
+        End-to-end data preparation pipeline:
+        1. Loads complete FMoW dataset.
+        2. Splits temporally into preDF (2002-2013) and postDF (2016-2017).
+        3. Identifies top 25 most frequent classes in the historical era.
+        4. Samples balanced 2200 images/class from preDF for student pre-training.
+        5. Samples balanced 2300 images/class from postDF for the streaming phase.
+
+        Returns:
+            tuple: (preDF_sampled, postDF_sampled, top_classes, class_to_idx, preDF)
+        """
         print("\n--- STEP 1: Total Dataset ---")
         total_df = self.get_dataset()
 
@@ -240,6 +322,14 @@ class FmowManager:
         Guarantees that every configuration ID in 1..config_id yields a distinct
         ordered partition (the stream order follows Concept_0, Concept_1, ...),
         so that each configuration is an independent sample for mean/std estimates.
+
+        Args:
+            top_classes (list): List of 25 class names.
+            config_id (int): Configuration ID (1..30).
+            classes_per_concept (int): Number of classes per concept task (default: 5).
+
+        Returns:
+            dict: Mapping from class name to concept string (e.g. {'crop_field': 'Concept_0', ...}).
         """
         import random
 
@@ -273,6 +363,17 @@ class FmowManager:
         return mapping
 
     def prepare_streaming_concepts(self, postDF_sampled, top_classes, test_size_per_concept=100, config_id=1, recurrent_concept=None):
+        """
+        Prepares the streaming timeline and hold-out test sets for a specific concept configuration:
+        1. Shuffles images within postDF.
+        2. Assigns concept groupings (5 concepts of 5 classes).
+        3. Sorts stream by concept order (Concept_0 -> Concept_1 -> ... -> Concept_4) to induce class-incremental drift.
+        4. Holds out a stratified test set of 100 images per concept to populate the continual learning matrix.
+        5. Optionally appends a recurrent concept at the end of the stream to test backward transfer/memory retention.
+
+        Returns:
+            tuple: (stream_df, test_dict)
+        """
         # Shuffle and prepare the extended embeddings for the streaming experiments
         postDF_sampled_final = postDF_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
 
@@ -313,3 +414,4 @@ class FmowManager:
         stream_df = pd.concat(stream_parts).reset_index(drop=True)
 
         return stream_df, test_dict
+
